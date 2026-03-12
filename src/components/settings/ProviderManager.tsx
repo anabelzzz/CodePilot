@@ -28,6 +28,7 @@ import {
 import type { ApiProvider } from "@/types";
 import { useTranslation } from "@/hooks/useTranslation";
 import Anthropic from "@lobehub/icons/es/Anthropic";
+import { ProviderOptionsSection } from "./ProviderOptionsSection";
 
 // ---------------------------------------------------------------------------
 // Main component
@@ -213,6 +214,7 @@ export function ProviderManager() {
             <p className="text-[11px] text-muted-foreground ml-[34px] leading-relaxed">
               {t('provider.ccSwitchHint')}
             </p>
+            <ProviderOptionsSection providerId="env" />
           </div>
 
           {/* Connected provider list */}
@@ -255,6 +257,10 @@ export function ProviderManager() {
                     </Button>
                   </div>
                 </div>
+                {/* Provider options (thinking mode + 1M context) — only for official Anthropic */}
+                {provider.base_url === 'https://api.anthropic.com' && (
+                  <ProviderOptionsSection providerId={provider.id} />
+                )}
                 {/* Gemini Image model selector — capsule buttons */}
                 {provider.provider_type === 'gemini-image' && (
                   <div className="ml-[34px] mt-2 flex items-center gap-1.5">

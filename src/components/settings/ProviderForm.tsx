@@ -279,6 +279,7 @@ export function ProviderForm({
 
           {/* Advanced options toggle */}
           <Button
+            type="button"
             variant="ghost"
             size="sm"
             className="gap-1.5 text-xs text-muted-foreground hover:text-foreground px-0 h-auto"

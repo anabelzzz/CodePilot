@@ -171,8 +171,8 @@ export const QUICK_PRESETS: QuickPreset[] = [
     icon: <Minimax size={18} />,
     provider_type: "anthropic",
     protocol: "anthropic",
-    base_url: "https://api.minimaxi.com/anthropic",
-    extra_env: '{"API_TIMEOUT_MS":"3000000","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","ANTHROPIC_API_KEY":""}',
+    base_url: "https://api.minimaxi.com/anthropic/v1",
+    extra_env: '{"API_TIMEOUT_MS":"3000000","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","ANTHROPIC_AUTH_TOKEN":"","ANTHROPIC_MODEL":"MiniMax-M2.5","ANTHROPIC_DEFAULT_SONNET_MODEL":"MiniMax-M2.5","ANTHROPIC_DEFAULT_OPUS_MODEL":"MiniMax-M2.5","ANTHROPIC_DEFAULT_HAIKU_MODEL":"MiniMax-M2.5"}',
     fields: ["api_key"],
   },
   {
@@ -184,7 +184,7 @@ export const QUICK_PRESETS: QuickPreset[] = [
     provider_type: "anthropic",
     protocol: "anthropic",
     base_url: "https://api.minimax.io/anthropic",
-    extra_env: '{"API_TIMEOUT_MS":"3000000","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","ANTHROPIC_API_KEY":""}',
+    extra_env: '{"API_TIMEOUT_MS":"3000000","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","ANTHROPIC_AUTH_TOKEN":"","ANTHROPIC_MODEL":"MiniMax-M2.5","ANTHROPIC_DEFAULT_SONNET_MODEL":"MiniMax-M2.5","ANTHROPIC_DEFAULT_OPUS_MODEL":"MiniMax-M2.5","ANTHROPIC_DEFAULT_HAIKU_MODEL":"MiniMax-M2.5"}',
     fields: ["api_key"],
   },
   {

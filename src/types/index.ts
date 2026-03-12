@@ -180,6 +180,8 @@ export interface ApiProvider {
   env_overrides_json: string;
   /** Semantic model role mapping — JSON string of { default?, reasoning?, small?, haiku?, sonnet?, opus? } */
   role_models_json: string;
+  /** Per-provider options — JSON string of { thinking_mode?, context_1m? } */
+  options_json: string;
   notes: string;
   created_at: string;
   updated_at: string;
@@ -228,6 +230,7 @@ export interface CreateProviderRequest {
   headers_json?: string;
   env_overrides_json?: string;
   role_models_json?: string;
+  options_json?: string;
   notes?: string;
 }
 
@@ -241,8 +244,15 @@ export interface UpdateProviderRequest {
   headers_json?: string;
   env_overrides_json?: string;
   role_models_json?: string;
+  options_json?: string;
   notes?: string;
   sort_order?: number;
+}
+
+/** Per-provider options stored in options_json */
+export interface ProviderOptions {
+  thinking_mode?: 'adaptive' | 'enabled' | 'disabled';
+  context_1m?: boolean;
 }
 
 export interface ProvidersResponse {
@@ -554,6 +564,8 @@ export interface AssistantWorkspaceState {
   lastCheckInDate: string | null;
   schemaVersion: number;
   hookTriggeredSessionId?: string;
+  /** ISO timestamp when hookTriggeredSessionId was set — used for staleness detection */
+  hookTriggeredAt?: string;
 }
 
 export interface AssistantWorkspaceFiles {
@@ -936,6 +948,8 @@ export interface ClaudeStreamOptions {
   enableFileCheckpointing?: boolean;
   /** When true, this is an auto-trigger turn (invisible to user) — skip rewind point emission */
   autoTrigger?: boolean;
+  /** Enable 1M context window (beta header: context-1m-2025-08-07) */
+  context1m?: boolean;
 }
 
 // ==========================================

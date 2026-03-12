@@ -126,7 +126,6 @@ export function GeneralSection() {
   const [skipPermissions, setSkipPermissions] = useState(false);
   const [showSkipPermWarning, setShowSkipPermWarning] = useState(false);
   const [skipPermSaving, setSkipPermSaving] = useState(false);
-  const [thinkingMode, setThinkingMode] = useState<string>('adaptive');
   const { accountInfo } = useAccountInfo();
   const { t, locale, setLocale } = useTranslation();
 
@@ -137,9 +136,6 @@ export function GeneralSection() {
         const data = await res.json();
         const appSettings = data.settings || {};
         setSkipPermissions(appSettings.dangerously_skip_permissions === "true");
-        if (appSettings.thinking_mode) {
-          setThinkingMode(appSettings.thinking_mode);
-        }
       }
     } catch {
       // ignore
@@ -149,21 +145,6 @@ export function GeneralSection() {
   useEffect(() => {
     fetchAppSettings();
   }, [fetchAppSettings]);
-
-  const saveThinkingMode = async (mode: string) => {
-    setThinkingMode(mode);
-    try {
-      await fetch("/api/settings/app", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          settings: { thinking_mode: mode },
-        }),
-      });
-    } catch {
-      // ignore
-    }
-  };
 
   const handleSkipPermToggle = (checked: boolean) => {
     if (checked) {
@@ -236,23 +217,6 @@ export function GeneralSection() {
           </Select>
         </FieldRow>
 
-        {/* Thinking mode */}
-        <FieldRow
-          label={t('settings.thinkingMode' as TranslationKey)}
-          description={t('settings.thinkingModeDesc' as TranslationKey)}
-          separator
-        >
-          <Select value={thinkingMode} onValueChange={saveThinkingMode}>
-            <SelectTrigger className="w-[140px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="adaptive">{t('settings.thinkingAdaptive' as TranslationKey)}</SelectItem>
-              <SelectItem value="enabled">{t('settings.thinkingEnabled' as TranslationKey)}</SelectItem>
-              <SelectItem value="disabled">{t('settings.thinkingDisabled' as TranslationKey)}</SelectItem>
-            </SelectContent>
-          </Select>
-        </FieldRow>
       </SettingsCard>
 
       {/* Appearance */}

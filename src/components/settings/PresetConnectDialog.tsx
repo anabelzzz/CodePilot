@@ -383,6 +383,7 @@ export function PresetConnectDialog({
           {!preset.fields.includes("extra_env") && (
             <>
               <Button
+                type="button"
                 variant="ghost"
                 size="sm"
                 className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground h-auto px-0 py-0"

@@ -250,12 +250,16 @@ export const VENDOR_PRESETS: VendorPreset[] = [
     description: 'MiniMax Code Plan — China region',
     descriptionZh: 'MiniMax 编程套餐 — 中国区',
     protocol: 'anthropic',
-    authStyle: 'api_key',
-    baseUrl: 'https://api.minimaxi.com/anthropic',
+    authStyle: 'auth_token',
+    baseUrl: 'https://api.minimaxi.com/anthropic/v1',
     defaultEnvOverrides: {
       API_TIMEOUT_MS: '3000000',
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-      ANTHROPIC_API_KEY: '',
+      ANTHROPIC_AUTH_TOKEN: '',
+      ANTHROPIC_MODEL: 'MiniMax-M2.5',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'MiniMax-M2.5',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'MiniMax-M2.5',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'MiniMax-M2.5',
     },
     defaultModels: [
       { modelId: 'sonnet', displayName: 'MiniMax-M2.5', role: 'default' },
@@ -272,12 +276,16 @@ export const VENDOR_PRESETS: VendorPreset[] = [
     description: 'MiniMax Code Plan — Global region',
     descriptionZh: 'MiniMax 编程套餐 — 国际区',
     protocol: 'anthropic',
-    authStyle: 'api_key',
+    authStyle: 'auth_token',
     baseUrl: 'https://api.minimax.io/anthropic',
     defaultEnvOverrides: {
       API_TIMEOUT_MS: '3000000',
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-      ANTHROPIC_API_KEY: '',
+      ANTHROPIC_AUTH_TOKEN: '',
+      ANTHROPIC_MODEL: 'MiniMax-M2.5',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'MiniMax-M2.5',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'MiniMax-M2.5',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'MiniMax-M2.5',
     },
     defaultModels: [
       { modelId: 'sonnet', displayName: 'MiniMax-M2.5', role: 'default' },
@@ -495,6 +503,18 @@ export function findPresetForLegacy(baseUrl: string, providerType: string): Vend
   if (baseUrl) {
     const match = VENDOR_PRESETS.find(p => p.baseUrl === baseUrl);
     if (match) return match;
+
+    // Fuzzy match: legacy entries may have old URLs (e.g. minimaxi.com/anthropic
+    // before /v1 suffix was added). Match by domain substring against presets.
+    const urlLower = baseUrl.toLowerCase();
+    const fuzzy = VENDOR_PRESETS.find(p => {
+      if (!p.baseUrl) return false;
+      try {
+        const presetHost = new URL(p.baseUrl).hostname;
+        return urlLower.includes(presetHost);
+      } catch { return false; }
+    });
+    if (fuzzy) return fuzzy;
   }
 
   // Type-based fallback

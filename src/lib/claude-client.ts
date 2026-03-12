@@ -20,7 +20,7 @@ import { registerConversation, unregisterConversation } from './conversation-reg
 import { captureCapabilities } from './agent-sdk-capabilities';
 import { getSetting, updateSdkSessionId, createPermissionRequest } from './db';
 import { resolveForClaudeCode, toClaudeCodeEnv } from './provider-resolver';
-import { findClaudeBinary, findGitBash, getExpandedPath } from './platform';
+import { findClaudeBinary, findGitBash, getExpandedPath, invalidateClaudePathCache } from './platform';
 import { notifyPermissionRequest, notifyGeneric } from './telegram-bot';
 import os from 'os';
 import fs from 'fs';
@@ -93,6 +93,15 @@ function findClaudePath(): string | undefined {
   const found = findClaudeBinary();
   cachedClaudePath = found ?? null;
   return found;
+}
+
+/**
+ * Invalidate the cached Claude binary path in this module AND in platform.ts.
+ * Must be called after installation so the next SDK call picks up the new binary.
+ */
+export function invalidateClaudeClientCache(): void {
+  cachedClaudePath = undefined; // reset to "not yet looked up"
+  invalidateClaudePathCache();  // also reset the 60s TTL cache in platform.ts
 }
 
 /**
@@ -383,6 +392,7 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
     agent,
     enableFileCheckpointing,
     autoTrigger,
+    context1m,
   } = options;
 
   return new ReadableStream<string>({
@@ -515,6 +525,12 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
         }
         if (enableFileCheckpointing) {
           queryOptions.enableFileCheckpointing = true;
+        }
+        if (context1m) {
+          queryOptions.betas = [
+            ...(queryOptions.betas || []),
+            'context-1m-2025-08-07',
+          ];
         }
 
         // Resume session if we have an SDK session ID from a previous conversation turn.
@@ -767,7 +783,6 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
           console.warn('[claude-client] Capability capture failed:', err);
         });
 
-        let lastAssistantText = '';
         let tokenUsage: TokenUsage | null = null;
         // Track pending TodoWrite tool_use_ids so we can sync after successful execution
         const pendingTodoWrites = new Map<string, Array<{ content: string; status: string; activeForm?: string }>>();
@@ -781,11 +796,7 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
             case 'assistant': {
               const assistantMsg = message as SDKAssistantMessage;
               // Text deltas are handled by stream_event for real-time streaming.
-              // Only track lastAssistantText here and process tool_use blocks.
-              const text = extractTextFromMessage(assistantMsg);
-              if (text) {
-                lastAssistantText = text;
-              }
+              // Here we only process tool_use blocks.
 
               // Check for tool use blocks
               for (const block of assistantMsg.message.content) {

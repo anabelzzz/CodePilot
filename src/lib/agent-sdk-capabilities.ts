@@ -105,8 +105,11 @@ export async function captureCapabilities(
       conversation.mcpServerStatus(),
     ]);
 
-    cache.models = models.status === 'fulfilled' ? models.value : cache.models;
-    cache.commands = commands.status === 'fulfilled' ? commands.value : cache.commands;
+    // Guard: only overwrite cached models if the new result is non-empty.
+    // An empty array (e.g. transient SDK error) would otherwise wipe valid cached data,
+    // causing models like Opus to disappear from the selector after long idle.
+    cache.models = models.status === 'fulfilled' && models.value.length > 0 ? models.value : cache.models;
+    cache.commands = commands.status === 'fulfilled' && commands.value.length > 0 ? commands.value : cache.commands;
     cache.account = account.status === 'fulfilled' ? account.value : cache.account;
     cache.mcpStatus = mcpStatus.status === 'fulfilled' ? mcpStatus.value : cache.mcpStatus;
     cache.capturedAt = Date.now();
