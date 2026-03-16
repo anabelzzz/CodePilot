@@ -413,7 +413,7 @@ export function ProviderDoctorDialog({ open, onOpenChange }: ProviderDoctorDialo
                 <br />
                 📖 查看{" "}
                 <a
-                  href="https://github.com/op7418/CodePilot/wiki/Provider-Setup"
+                  href="https://www.codepilot.sh/zh/docs/providers"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="underline text-foreground hover:no-underline"
@@ -439,7 +439,7 @@ export function ProviderDoctorDialog({ open, onOpenChange }: ProviderDoctorDialo
                 <br />
                 📖 See the{" "}
                 <a
-                  href="https://github.com/op7418/CodePilot/wiki/Provider-Setup"
+                  href="https://www.codepilot.sh/zh/docs/providers"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="underline text-foreground hover:no-underline"
