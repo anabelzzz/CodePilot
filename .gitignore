@@ -58,3 +58,6 @@ next-env.d.ts
 apps/site/.next/
 apps/site/.source/
 apps/site/node_modules/
+
+# claude code session data
+.claude/
