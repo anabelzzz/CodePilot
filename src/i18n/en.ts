@@ -45,8 +45,8 @@ const en = {
   'messageInput.reviewDesc': 'Review code quality',
   'messageInput.terminalSetupDesc': 'Configure terminal settings',
   'messageInput.memoryDesc': 'Edit project memory file',
-  // 'messageInput.modeCode': 'Code', // Reserved: mode UI removed in latency remediation
-  // 'messageInput.modePlan': 'Plan', // Reserved: mode UI removed in latency remediation
+  'messageInput.modeCode': 'Code',
+  'messageInput.modePlan': 'Plan',
   'messageInput.aiSuggested': 'AI Suggested',
 
   // ── Streaming message ───────────────────────────────────────

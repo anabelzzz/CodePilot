@@ -4,62 +4,16 @@ import { addMessage, getMessages, getSession, updateSessionTitle, updateSdkSessi
 import { resolveProvider as resolveProviderUnified } from '@/lib/provider-resolver';
 import { notifySessionStart, notifySessionComplete, notifySessionError } from '@/lib/telegram-bot';
 import { extractCompletion } from '@/lib/onboarding-completion';
+import { loadCodePilotMcpServers } from '@/lib/mcp-loader';
+import { assembleContext } from '@/lib/context-assembler';
 import type { SendMessageRequest, SSEEvent, TokenUsage, MessageContentBlock, FileAttachment, ClaudeStreamOptions } from '@/types';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import type { MCPServerConfig } from '@/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-/** Read MCP server configs from ~/.claude.json, ~/.claude/settings.json, and project .mcp.json */
-function loadMcpServers(): Record<string, MCPServerConfig> | undefined {
-  try {
-    const readJson = (p: string): Record<string, unknown> => {
-      if (!fs.existsSync(p)) return {};
-      try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return {}; }
-    };
-    const userConfig = readJson(path.join(os.homedir(), '.claude.json'));
-    const settings = readJson(path.join(os.homedir(), '.claude', 'settings.json'));
-    // Also read project-level .mcp.json
-    const projectMcp = readJson(path.join(process.cwd(), '.mcp.json'));
-    const merged = {
-      ...((userConfig.mcpServers || {}) as Record<string, MCPServerConfig>),
-      ...((settings.mcpServers || {}) as Record<string, MCPServerConfig>),
-      ...((projectMcp.mcpServers || {}) as Record<string, MCPServerConfig>),
-    };
-    // Apply persistent enabled overrides for project-level servers
-    const settingsOverrides = (settings.mcpServerOverrides || {}) as Record<string, { enabled?: boolean }>;
-    for (const [name, override] of Object.entries(settingsOverrides)) {
-      if (merged[name] && override.enabled !== undefined) {
-        merged[name] = { ...merged[name], enabled: override.enabled };
-      }
-    }
-    // Resolve ${...} placeholders in env values against DB settings
-    for (const server of Object.values(merged)) {
-      if (server.env) {
-        for (const [key, value] of Object.entries(server.env)) {
-          if (typeof value === 'string' && value.startsWith('${') && value.endsWith('}')) {
-            const settingKey = value.slice(2, -1);
-            const resolved = getSetting(settingKey);
-            server.env[key] = resolved || '';
-          }
-        }
-      }
-    }
-    // Filter out persistently disabled servers
-    for (const [name, server] of Object.entries(merged)) {
-      if (server.enabled === false) {
-        delete merged[name];
-      }
-    }
-    return Object.keys(merged).length > 0 ? merged : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 export async function POST(request: NextRequest) {
   let activeSessionId: string | undefined;
@@ -166,9 +120,11 @@ export async function POST(request: NextRequest) {
       updateSessionProviderId(session_id, persistProviderId);
     }
 
-    // Desktop main chat always uses 'code' mode with acceptEdits permissions.
-    // Bridge sessions may override mode via conversation-engine independently.
-    const permissionMode = 'acceptEdits';
+    // Resolve permission mode from session's mode setting.
+    // 'plan' → SDK plan mode (no tool execution, planning only)
+    // 'code' (default) → acceptEdits (auto-approve file edits)
+    const sessionMode = session.mode || 'code';
+    const permissionMode = sessionMode === 'plan' ? 'plan' : 'acceptEdits';
     const systemPromptOverride: string | undefined = undefined;
 
     const abortController = new AbortController();
@@ -195,153 +151,6 @@ export async function POST(request: NextRequest) {
         })
       : undefined;
 
-    // Load assistant workspace prompt if configured
-    let workspacePrompt = '';
-    let assistantProjectInstructions = '';
-    try {
-      const workspacePath = getSetting('assistant_workspace_path');
-      if (workspacePath) {
-        const { loadWorkspaceFiles, assembleWorkspacePrompt, loadState, needsDailyCheckIn } = await import('@/lib/assistant-workspace');
-
-        // Only inject workspace files for assistant project sessions
-        const sessionWd = session.working_directory || '';
-        const isAssistantProject = sessionWd === workspacePath;
-
-        if (isAssistantProject) {
-          // Incremental reindex BEFORE search so current turn sees latest content
-          try {
-            const { indexWorkspace } = await import('@/lib/workspace-indexer');
-            indexWorkspace(workspacePath);
-          } catch {
-            // indexer not available, skip
-          }
-
-          const files = loadWorkspaceFiles(workspacePath);
-
-          // Retrieval: search workspace index for relevant context
-          let retrievalResults: import('@/types').SearchResult[] | undefined;
-          try {
-            const { searchWorkspace, updateHotset } = await import('@/lib/workspace-retrieval');
-            if (content.length > 10) {
-              retrievalResults = searchWorkspace(workspacePath, content, { limit: 5 });
-              if (retrievalResults.length > 0) {
-                updateHotset(workspacePath, retrievalResults.map(r => r.path));
-              }
-            }
-          } catch {
-            // retrieval module not available, skip
-          }
-
-          workspacePrompt = assembleWorkspacePrompt(files, retrievalResults);
-
-          const state = loadState(workspacePath);
-
-          if (!state.onboardingComplete) {
-            // First-time onboarding: instruct AI to ask onboarding questions
-            assistantProjectInstructions = `<assistant-project-task type="onboarding">
-You are now in the assistant workspace onboarding session. Your task is to interview the user to build their profile.
-
-Ask the following 13 questions ONE AT A TIME. Wait for the user's answer before asking the next question. Be conversational and friendly.
-
-1. How should I address you?
-2. What name should I use for myself?
-3. Do you prefer "concise and direct" or "detailed explanations"?
-4. Do you prefer "minimal interruptions" or "proactive suggestions"?
-5. What are your three hard boundaries?
-6. What are your three most important current goals?
-7. Do you prefer output as "lists", "reports", or "conversation summaries"?
-8. What information may be written to long-term memory?
-9. What information must never be written to long-term memory?
-10. What three things should I do first when entering a project?
-11. How do you organize your materials? (by project / time / topic / mixed)
-12. Where should new information go by default?
-13. How should completed tasks be archived?
-
-After the user answers the LAST question (Q13), you MUST immediately output the completion block below. Do NOT wait for the user to say anything else. Do NOT ask for confirmation. Just output the block right after your response to Q13.
-
-CRITICAL FORMATTING RULES for the completion block:
-- Each value must be a single line (replace any newlines with spaces)
-- Escape all double quotes inside values with backslash: \\"
-- Do NOT use single quotes for JSON keys or values
-- Do NOT add trailing commas
-- The JSON must be on a SINGLE line
-
-\`\`\`onboarding-complete
-{"q1":"answer1","q2":"answer2","q3":"answer3","q4":"answer4","q5":"answer5","q6":"answer6","q7":"answer7","q8":"answer8","q9":"answer9","q10":"answer10","q11":"answer11","q12":"answer12","q13":"answer13"}
-\`\`\`
-
-After outputting the completion block, tell the user that the setup is complete and the system is now initializing their workspace. Keep this message brief and friendly.
-
-Do NOT try to write files yourself. The system will automatically generate soul.md, user.md, claude.md, memory.md, config.json, and taxonomy.json from your collected answers.
-
-Start by greeting the user and asking the first question.
-</assistant-project-task>`;
-          } else if (needsDailyCheckIn(state)) {
-            // Daily check-in: instruct AI to ask 3 quick questions
-            assistantProjectInstructions = `<assistant-project-task type="daily-checkin">
-You are now in the assistant workspace daily check-in session. Ask the user these 3 questions ONE AT A TIME:
-
-1. What did you work on or accomplish today?
-2. Any changes to your current priorities or goals?
-3. Anything you'd like me to remember going forward?
-
-After collecting all 3 answers, output a summary in exactly this format:
-
-\`\`\`checkin-complete
-{"q1":"answer1","q2":"answer2","q3":"answer3"}
-\`\`\`
-
-Do NOT try to write files yourself. The system will automatically write a daily memory entry and update user.md from your collected answers.
-
-Start by greeting the user and asking the first question.
-</assistant-project-task>`;
-          }
-
-        }
-      }
-    } catch (e) {
-      console.warn('[chat API] Failed to load assistant workspace:', e);
-    }
-
-    // Append per-request system prompt (e.g. skill injection for image generation)
-    let finalSystemPrompt = systemPromptOverride || session.system_prompt || undefined;
-    if (systemPromptAppend) {
-      finalSystemPrompt = (finalSystemPrompt || '') + '\n\n' + systemPromptAppend;
-    }
-
-    // Workspace prompt goes first (base personality), session prompt after (task override)
-    if (workspacePrompt) {
-      finalSystemPrompt = workspacePrompt + '\n\n' + (finalSystemPrompt || '');
-    }
-
-    // Assistant project instructions go after workspace prompt
-    if (assistantProjectInstructions) {
-      finalSystemPrompt = (finalSystemPrompt || '') + '\n\n' + assistantProjectInstructions;
-    }
-
-    // Inject available CLI tools context (best-effort, non-blocking)
-    try {
-      const { buildCliToolsContext } = await import('@/lib/cli-tools-context');
-      const cliToolsCtx = await buildCliToolsContext();
-      if (cliToolsCtx) {
-        finalSystemPrompt = (finalSystemPrompt || '') + '\n\n' + cliToolsCtx;
-      }
-    } catch {
-      // CLI tools context injection failed — don't block chat
-    }
-
-    // Inject widget (generative UI) system prompt — gated by user setting (default: enabled)
-    const generativeUISetting = getSetting('generative_ui_enabled');
-    const generativeUIEnabled = generativeUISetting !== 'false';
-    if (generativeUIEnabled) {
-      try {
-        const { WIDGET_SYSTEM_PROMPT } = await import('@/lib/widget-guidelines');
-        finalSystemPrompt = (finalSystemPrompt || '') + '\n\n' + WIDGET_SYSTEM_PROMPT;
-      } catch {
-        // Widget prompt injection failed — don't block chat
-      }
-    }
-
     // Load recent conversation history from DB as fallback context.
     // This is used when SDK session resume is unavailable or fails,
     // so the model still has conversation context.
@@ -352,9 +161,23 @@ Start by greeting the user and asking the first question.
       content: m.content,
     }));
 
-    // Load MCP servers from Claude config files so the SDK knows about them
-    // even when settingSources skips 'user' (custom provider scenario).
-    const mcpServers = loadMcpServers();
+    // Unified context assembly — extracts workspace, CLI tools, widget prompt
+    const assembled = await assembleContext({
+      session,
+      entryPoint: 'desktop',
+      userPrompt: content,
+      systemPromptAppend,
+      conversationHistory: historyMsgs,
+      imageAgentMode: !!systemPromptAppend,
+    });
+    const finalSystemPrompt = assembled.systemPrompt;
+    const generativeUIEnabled = assembled.generativeUIEnabled;
+    const assistantProjectInstructions = assembled.assistantProjectInstructions;
+    const isAssistantProject = assembled.isAssistantProject;
+
+    // Load only MCP servers needing CodePilot-specific processing (${...} env placeholders).
+    // All other MCP servers are auto-loaded by the SDK via settingSources.
+    const mcpServers = loadCodePilotMcpServers();
 
     // Stream Claude response, using SDK session ID for resume if available
     console.log('[chat API] streamClaude params:', {

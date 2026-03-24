@@ -6,6 +6,7 @@ import type { Message, MessagesResponse, FileAttachment, SessionStreamSnapshot }
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { ChatComposerActionBar } from './ChatComposerActionBar';
+import { ModeIndicator } from './ModeIndicator';
 import { ChatPermissionSelector } from './ChatPermissionSelector';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { ImageGenToggle } from './ImageGenToggle';
@@ -33,9 +34,10 @@ interface ChatViewProps {
   modelName?: string;
   providerId?: string;
   initialPermissionProfile?: 'default' | 'full_access';
+  initialMode?: 'code' | 'plan';
 }
 
-export function ChatView({ sessionId, initialMessages = [], initialHasMore = false, modelName, providerId, initialPermissionProfile }: ChatViewProps) {
+export function ChatView({ sessionId, initialMessages = [], initialHasMore = false, modelName, providerId, initialPermissionProfile, initialMode }: ChatViewProps) {
   const { setStreamingSessionId, workingDirectory, setPendingApprovalSessionId } = usePanel();
   const { t } = useTranslation();
   const router = useRouter();
@@ -47,7 +49,7 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
   const [hasMore, setHasMore] = useState(initialHasMore);
   const [loadingMore, setLoadingMore] = useState(false);
   const loadingMoreRef = useRef(false);
-  const [mode, setMode] = useState('code'); // Desktop chat always uses 'code'
+  const [mode, setMode] = useState<string>(initialMode || 'code');
   const [currentModel, setCurrentModel] = useState(() => modelName || (typeof window !== 'undefined' ? localStorage.getItem('codepilot:last-model') : null) || 'sonnet');
   const [currentProviderId, setCurrentProviderId] = useState(() => providerId || (typeof window !== 'undefined' ? localStorage.getItem('codepilot:last-provider-id') : null) || '');
   const [selectedEffort, setSelectedEffort] = useState<string | undefined>(undefined);
@@ -436,7 +438,7 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
         sdkInitMeta={initMetaRef.current}
       />
       <ChatComposerActionBar
-        left={<ImageGenToggle />}
+        left={<><ModeIndicator mode={mode} onModeChange={handleModeChange} disabled={isStreaming} /><ImageGenToggle /></>}
         center={
           <ChatPermissionSelector
             sessionId={sessionId}

@@ -42,8 +42,8 @@ const zh: Record<TranslationKey, string> = {
   'messageInput.reviewDesc': '审查代码质量',
   'messageInput.terminalSetupDesc': '配置终端设置',
   'messageInput.memoryDesc': '编辑项目记忆文件',
-  // 'messageInput.modeCode': '代码', // Reserved: mode UI removed in latency remediation
-  // 'messageInput.modePlan': '计划', // Reserved: mode UI removed in latency remediation
+  'messageInput.modeCode': '代码',
+  'messageInput.modePlan': '计划',
   'messageInput.aiSuggested': 'AI 推荐',
 
   // ── Streaming message ───────────────────────────────────────
