@@ -281,21 +281,31 @@ function initDb(db: Database.Database): void {
   migrateDb(db);
 }
 
+/** Safely add a column — ignores "duplicate column name" errors from concurrent workers. */
+function safeAddColumn(db: Database.Database, sql: string): void {
+  try {
+    db.exec(sql);
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message.includes('duplicate column name')) return;
+    throw err;
+  }
+}
+
 function migrateDb(db: Database.Database): void {
   const columns = db.prepare("PRAGMA table_info(chat_sessions)").all() as { name: string }[];
   const colNames = columns.map(c => c.name);
 
   if (!colNames.includes('model')) {
-    db.exec("ALTER TABLE chat_sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''");
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''");
   }
   if (!colNames.includes('system_prompt')) {
-    db.exec("ALTER TABLE chat_sessions ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''");
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''");
   }
   if (!colNames.includes('sdk_session_id')) {
-    db.exec("ALTER TABLE chat_sessions ADD COLUMN sdk_session_id TEXT NOT NULL DEFAULT ''");
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN sdk_session_id TEXT NOT NULL DEFAULT ''");
   }
   if (!colNames.includes('project_name')) {
-    db.exec("ALTER TABLE chat_sessions ADD COLUMN project_name TEXT NOT NULL DEFAULT ''");
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN project_name TEXT NOT NULL DEFAULT ''");
     // Backfill project_name from working_directory for existing rows
     db.exec(`
       UPDATE chat_sessions
@@ -307,33 +317,33 @@ function migrateDb(db: Database.Database): void {
     `);
   }
   if (!colNames.includes('status')) {
-    db.exec("ALTER TABLE chat_sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
   }
   if (!colNames.includes('mode')) {
-    db.exec("ALTER TABLE chat_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'code'");
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'code'");
   }
   if (!colNames.includes('provider_name')) {
-    db.exec("ALTER TABLE chat_sessions ADD COLUMN provider_name TEXT NOT NULL DEFAULT ''");
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN provider_name TEXT NOT NULL DEFAULT ''");
   }
   if (!colNames.includes('provider_id')) {
-    db.exec("ALTER TABLE chat_sessions ADD COLUMN provider_id TEXT NOT NULL DEFAULT ''");
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN provider_id TEXT NOT NULL DEFAULT ''");
   }
   if (!colNames.includes('sdk_cwd')) {
-    db.exec("ALTER TABLE chat_sessions ADD COLUMN sdk_cwd TEXT NOT NULL DEFAULT ''");
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN sdk_cwd TEXT NOT NULL DEFAULT ''");
     // Backfill sdk_cwd from working_directory for existing sessions
     db.exec("UPDATE chat_sessions SET sdk_cwd = working_directory WHERE sdk_cwd = '' AND working_directory != ''");
   }
   if (!colNames.includes('runtime_status')) {
-    db.exec("ALTER TABLE chat_sessions ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'idle'");
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'idle'");
   }
   if (!colNames.includes('runtime_updated_at')) {
-    db.exec("ALTER TABLE chat_sessions ADD COLUMN runtime_updated_at TEXT NOT NULL DEFAULT ''");
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN runtime_updated_at TEXT NOT NULL DEFAULT ''");
   }
   if (!colNames.includes('runtime_error')) {
-    db.exec("ALTER TABLE chat_sessions ADD COLUMN runtime_error TEXT NOT NULL DEFAULT ''");
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN runtime_error TEXT NOT NULL DEFAULT ''");
   }
   if (!colNames.includes('permission_profile')) {
-    db.exec("ALTER TABLE chat_sessions ADD COLUMN permission_profile TEXT NOT NULL DEFAULT 'default'");
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN permission_profile TEXT NOT NULL DEFAULT 'default'");
   }
   db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_runtime_status ON chat_sessions(runtime_status)");
 
@@ -352,7 +362,7 @@ function migrateDb(db: Database.Database): void {
   const msgColNames = msgColumns.map(c => c.name);
 
   if (!msgColNames.includes('token_usage')) {
-    db.exec("ALTER TABLE messages ADD COLUMN token_usage TEXT");
+    safeAddColumn(db, "ALTER TABLE messages ADD COLUMN token_usage TEXT");
   }
 
   // Ensure tasks table exists for databases created before this migration
@@ -374,10 +384,10 @@ function migrateDb(db: Database.Database): void {
   const taskColumns = db.prepare("PRAGMA table_info(tasks)").all() as { name: string }[];
   const taskColNames = taskColumns.map(c => c.name);
   if (!taskColNames.includes('source')) {
-    db.exec("ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'user'");
+    safeAddColumn(db, "ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'user'");
   }
   if (!taskColNames.includes('sort_order')) {
-    db.exec("ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
+    safeAddColumn(db, "ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
   }
 
   // Ensure api_providers table exists for databases created before this migration
@@ -402,19 +412,19 @@ function migrateDb(db: Database.Database): void {
     const providerCols = db.prepare("PRAGMA table_info(api_providers)").all() as { name: string }[];
     const provColNames = providerCols.map(c => c.name);
     if (!provColNames.includes('protocol')) {
-      db.exec("ALTER TABLE api_providers ADD COLUMN protocol TEXT NOT NULL DEFAULT ''");
+      safeAddColumn(db, "ALTER TABLE api_providers ADD COLUMN protocol TEXT NOT NULL DEFAULT ''");
     }
     if (!provColNames.includes('headers_json')) {
-      db.exec("ALTER TABLE api_providers ADD COLUMN headers_json TEXT NOT NULL DEFAULT '{}'");
+      safeAddColumn(db, "ALTER TABLE api_providers ADD COLUMN headers_json TEXT NOT NULL DEFAULT '{}'");
     }
     if (!provColNames.includes('env_overrides_json')) {
-      db.exec("ALTER TABLE api_providers ADD COLUMN env_overrides_json TEXT NOT NULL DEFAULT ''");
+      safeAddColumn(db, "ALTER TABLE api_providers ADD COLUMN env_overrides_json TEXT NOT NULL DEFAULT ''");
     }
     if (!provColNames.includes('role_models_json')) {
-      db.exec("ALTER TABLE api_providers ADD COLUMN role_models_json TEXT NOT NULL DEFAULT '{}'");
+      safeAddColumn(db, "ALTER TABLE api_providers ADD COLUMN role_models_json TEXT NOT NULL DEFAULT '{}'");
     }
     if (!provColNames.includes('options_json')) {
-      db.exec("ALTER TABLE api_providers ADD COLUMN options_json TEXT NOT NULL DEFAULT '{}'");
+      safeAddColumn(db, "ALTER TABLE api_providers ADD COLUMN options_json TEXT NOT NULL DEFAULT '{}'");
     }
   }
 
@@ -534,7 +544,7 @@ function migrateDb(db: Database.Database): void {
 
   // Add favorited column to media_generations if missing
   try {
-    db.exec("ALTER TABLE media_generations ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0");
+    safeAddColumn(db, "ALTER TABLE media_generations ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0");
   } catch {
     // Column already exists
   }
@@ -690,13 +700,13 @@ function migrateDb(db: Database.Database): void {
   const permLinkCols = db.prepare("PRAGMA table_info(channel_permission_links)").all() as { name: string }[];
   const permLinkColNames = permLinkCols.map(c => c.name);
   if (permLinkColNames.length > 0 && !permLinkColNames.includes('tool_name')) {
-    db.exec("ALTER TABLE channel_permission_links ADD COLUMN tool_name TEXT NOT NULL DEFAULT ''");
+    safeAddColumn(db, "ALTER TABLE channel_permission_links ADD COLUMN tool_name TEXT NOT NULL DEFAULT ''");
   }
   if (permLinkColNames.length > 0 && !permLinkColNames.includes('suggestions')) {
-    db.exec("ALTER TABLE channel_permission_links ADD COLUMN suggestions TEXT NOT NULL DEFAULT ''");
+    safeAddColumn(db, "ALTER TABLE channel_permission_links ADD COLUMN suggestions TEXT NOT NULL DEFAULT ''");
   }
   if (permLinkColNames.length > 0 && !permLinkColNames.includes('resolved')) {
-    db.exec("ALTER TABLE channel_permission_links ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0");
+    safeAddColumn(db, "ALTER TABLE channel_permission_links ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0");
   }
 
   // Channel configs table (structured config for channel plugins)
@@ -770,7 +780,7 @@ function migrateDb(db: Database.Database): void {
   {
     const descCols = db.prepare("PRAGMA table_info(cli_tool_descriptions)").all() as { name: string }[];
     if (!descCols.some(c => c.name === 'structured_json')) {
-      db.exec("ALTER TABLE cli_tool_descriptions ADD COLUMN structured_json TEXT NOT NULL DEFAULT ''");
+      safeAddColumn(db, "ALTER TABLE cli_tool_descriptions ADD COLUMN structured_json TEXT NOT NULL DEFAULT ''");
     }
   }
 
@@ -778,10 +788,10 @@ function migrateDb(db: Database.Database): void {
   {
     const customCols = db.prepare("PRAGMA table_info(cli_tools_custom)").all() as { name: string }[];
     if (!customCols.some(c => c.name === 'install_method')) {
-      db.exec("ALTER TABLE cli_tools_custom ADD COLUMN install_method TEXT NOT NULL DEFAULT 'unknown'");
+      safeAddColumn(db, "ALTER TABLE cli_tools_custom ADD COLUMN install_method TEXT NOT NULL DEFAULT 'unknown'");
     }
     if (!customCols.some(c => c.name === 'install_package')) {
-      db.exec("ALTER TABLE cli_tools_custom ADD COLUMN install_package TEXT NOT NULL DEFAULT ''");
+      safeAddColumn(db, "ALTER TABLE cli_tools_custom ADD COLUMN install_package TEXT NOT NULL DEFAULT ''");
     }
   }
 }
