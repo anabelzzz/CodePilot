@@ -35,7 +35,7 @@ import type { TranslationKey } from "@/i18n";
 import { useNativeFolderPicker } from "@/hooks/useNativeFolderPicker";
 import { showToast } from '@/hooks/useToast';
 import { ConnectionStatus } from "./ConnectionStatus";
-import { ImportSessionDialog } from "./ImportSessionDialog";
+// ImportSessionDialog moved to Settings page
 import { SessionListItem, SplitGroupSection } from "./SessionListItem";
 import { ProjectGroupHeader } from "./ProjectGroupHeader";
 import { FolderPicker } from "@/components/chat/FolderPicker";
@@ -71,7 +71,7 @@ export function ChatListPanel({ open, width, hasUpdate, readyToInstall }: ChatLi
   const [searchDialogOpen, setSearchDialogOpen] = useState(false);
   const [expandedSessionGroups, setExpandedSessionGroups] = useState<Set<string>>(new Set());
   const SESSION_TRUNCATE_LIMIT = 10;
-  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  // importDialogOpen removed — Import CLI moved to Settings
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(
     () => loadCollapsedProjects()
@@ -544,10 +544,17 @@ export function ChatListPanel({ open, width, hasUpdate, readyToInstall }: ChatLi
 
               const isSessionsExpanded = expandedSessionGroups.has(group.workingDirectory);
               const shouldTruncate = group.sessions.length > SESSION_TRUNCATE_LIMIT;
-              const visibleSessions = shouldTruncate && !isSessionsExpanded
-                ? group.sessions.slice(0, SESSION_TRUNCATE_LIMIT)
-                : group.sessions;
-              const hiddenCount = group.sessions.length - SESSION_TRUNCATE_LIMIT;
+              let visibleSessions = group.sessions;
+              if (shouldTruncate && !isSessionsExpanded) {
+                const truncated = group.sessions.slice(0, SESSION_TRUNCATE_LIMIT);
+                // Ensure the active session is always visible even when truncated
+                const activeSession = group.sessions.find(s => pathname === `/chat/${s.id}`);
+                if (activeSession && !truncated.includes(activeSession)) {
+                  truncated.push(activeSession);
+                }
+                visibleSessions = truncated;
+              }
+              const hiddenCount = group.sessions.length - visibleSessions.length;
 
               return (
                 <div key={group.workingDirectory || "__no_project"} className="mt-1 first:mt-0">
@@ -660,7 +667,7 @@ export function ChatListPanel({ open, width, hasUpdate, readyToInstall }: ChatLi
       </div>
 
       {/* Search Dialog */}
-      <Dialog open={searchDialogOpen} onOpenChange={setSearchDialogOpen}>
+      <Dialog open={searchDialogOpen} onOpenChange={(open) => { setSearchDialogOpen(open); if (!open) setSearchQuery(""); }}>
         <DialogContent className="sm:max-w-md p-0 max-h-[60vh] flex flex-col overflow-hidden" showCloseButton={false}>
           <div className="p-3 shrink-0">
             <div className="relative">
@@ -713,11 +720,6 @@ export function ChatListPanel({ open, width, hasUpdate, readyToInstall }: ChatLi
         </DialogContent>
       </Dialog>
 
-      {/* Import CLI Session Dialog */}
-      <ImportSessionDialog
-        open={importDialogOpen}
-        onOpenChange={setImportDialogOpen}
-      />
 
       {/* Folder Picker Dialog */}
       <FolderPicker

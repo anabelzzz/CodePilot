@@ -513,7 +513,7 @@ function createWindow(url?: string) {
   const windowOptions: Electron.BrowserWindowConstructorOptions = {
     width: 1280,
     height: 860,
-    minWidth: 800,
+    minWidth: 1024,
     minHeight: 600,
     icon: getIconPath(),
     webPreferences: {
