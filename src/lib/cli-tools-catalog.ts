@@ -248,8 +248,8 @@ export const CLI_TOOLS_CATALOG: CliToolDefinition[] = [
       en: ['Create and configure AI voice agents', 'Push/pull agent configuration sync', 'Manage webhook and client tool integrations', 'Automate voice agent deployment via CI/CD', 'Generate web embed widgets'],
     },
     guideSteps: {
-      zh: ['安装：npm install -g @elevenlabs/cli', '运行 elevenlabs auth login 配置 API 密钥', '运行 elevenlabs agents add 从模板创建代理', '使用 elevenlabs agents push 同步到平台'],
-      en: ['Install: npm install -g @elevenlabs/cli', 'Run elevenlabs auth login to configure API key', 'Run elevenlabs agents add to create an agent from template', 'Use elevenlabs agents push to sync to the platform'],
+      zh: ['安装：npm install -g @elevenlabs/cli', '运行 elevenlabs init 初始化项目结构', '运行 elevenlabs auth login 配置 API 密钥（密钥存储在 ~/.agents/api_keys.json）', '运行 elevenlabs agents add 从模板创建代理'],
+      en: ['Install: npm install -g @elevenlabs/cli', 'Run elevenlabs init to initialize project structure', 'Run elevenlabs auth login to configure API key (stored in ~/.agents/api_keys.json)', 'Run elevenlabs agents add to create an agent from template'],
     },
     examplePrompts: [
       { label: 'Create agent', promptZh: '用 ElevenLabs CLI 创建一个客服语音代理', promptEn: 'Use ElevenLabs CLI to create a customer service voice agent' },
@@ -280,8 +280,8 @@ export const CLI_TOOLS_CATALOG: CliToolDefinition[] = [
       en: ['Create and manage payment resources in sandbox', 'Stream real-time API request logs', 'Trigger and forward webhook events locally', 'Manage multi-service credentials via Projects plugin', 'Automate payment testing in CI/CD'],
     },
     guideSteps: {
-      zh: ['安装：brew install stripe/stripe-cli/stripe', '运行 stripe login 完成身份认证', '使用 stripe listen --forward-to localhost:4242/webhooks 转发事件'],
-      en: ['Install: brew install stripe/stripe-cli/stripe', 'Run stripe login to authenticate', 'Use stripe listen --forward-to localhost:4242/webhooks to forward events'],
+      zh: ['安装：brew install stripe/stripe-cli/stripe', '运行 stripe login 完成身份认证（会在浏览器中打开配对页面）', '运行 stripe listen --forward-to localhost:4242/webhooks 转发 Webhook 事件到本地', '记录 listen 命令输出的 webhook signing secret（whsec_...）用于签名验证'],
+      en: ['Install: brew install stripe/stripe-cli/stripe', 'Run stripe login to authenticate (opens pairing page in browser)', 'Run stripe listen --forward-to localhost:4242/webhooks to forward events locally', 'Note the webhook signing secret (whsec_...) from listen output for signature verification'],
     },
     examplePrompts: [
       { label: 'Forward webhooks', promptZh: '用 Stripe CLI 把 Webhook 事件转发到我的本地服务器', promptEn: 'Use Stripe CLI to forward webhook events to my local server' },
@@ -313,8 +313,8 @@ export const CLI_TOOLS_CATALOG: CliToolDefinition[] = [
       en: ['Search and play NetEase Cloud Music', 'Manage and create playlists', 'Get daily recommendations and personalized content', 'Control music via AI agent natural language', 'Full-screen TUI player experience'],
     },
     guideSteps: {
-      zh: ['安装：npm install -g @music163/ncm-cli', '确保系统已安装 mpv 播放器', '运行 ncm-cli 启动并扫码登录网易云音乐账号', '在对话中说"播放一首周杰伦的歌"即可控制播放'],
-      en: ['Install: npm install -g @music163/ncm-cli', 'Ensure mpv player is installed on your system', 'Run ncm-cli and scan QR code to log in', 'Say "play a song by Jay Chou" in chat to control playback'],
+      zh: ['安装：npm install -g @music163/ncm-cli', '安装 mpv 播放器（本地播放必需）：brew install mpv', '运行 ncm-cli configure 配置 API 凭证（需要网易云开发者账号的 App ID 和 Private Key）', '运行 ncm-cli login 扫码登录网易云音乐账号'],
+      en: ['Install: npm install -g @music163/ncm-cli', 'Install mpv player (required for playback): brew install mpv', 'Run ncm-cli configure to set up API credentials (needs App ID and Private Key from developer.music.163.com)', 'Run ncm-cli login to scan QR code and log in'],
     },
     examplePrompts: [
       { label: 'Play music', promptZh: '帮我播放一首轻松的音乐', promptEn: 'Play some relaxing music for me' },
