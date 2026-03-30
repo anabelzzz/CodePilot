@@ -329,6 +329,7 @@ export function StreamingMessage({
                       .replace(/\\t/g, '\t')
                       .replace(/\\r/g, '\r')
                       .replace(/\\"/g, '"')
+                      .replace(/\\u([0-9a-fA-F]{4})/g, (_: string, hex: string) => String.fromCharCode(parseInt(hex, 16)))
                       .replace(/\x00BACKSLASH\x00/g, '\\');
                   } catch { partialCode = null; }
                 }

@@ -304,6 +304,7 @@ function extractTruncatedWidget(fenceBody: string): ShowWidgetData | null {
       .replace(/\\t/g, '\t')
       .replace(/\\r/g, '\r')
       .replace(/\\"/g, '"')
+      .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
       .replace(/\x00BACKSLASH\x00/g, '\\');
     if (widgetCode.length < 10) return null;
 
