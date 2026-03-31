@@ -286,7 +286,6 @@ export function DashboardPanel() {
                     <span className={`pointer-events-none block h-3 w-3 rounded-full bg-background shadow-sm ring-0 transition-transform mt-0.5 ${autoRefresh ? 'translate-x-3.5 ml-0' : 'translate-x-0.5'}`} />
                   </span>
                 </button>
-                {/* Divider */}
                 <div className="h-4 w-px bg-border/60 mx-1" />
                 {/* Refresh all */}
                 <Button
@@ -301,6 +300,7 @@ export function DashboardPanel() {
                 </Button>
               </>
             )}
+            {/* Close button — always visible */}
             <Button
               variant="ghost"
               size="icon-sm"
