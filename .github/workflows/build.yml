@@ -436,7 +436,7 @@ jobs:
           - [Intel](https://github.com/op7418/CodePilot/releases/download/v${VERSION}/CodePilot-${VERSION}-x64.dmg)
 
           ### Windows
-          - [Windows 安装包](https://github.com/op7418/CodePilot/releases/download/v${VERSION}/CodePilot-Setup-${VERSION}.exe)
+          - [Windows 安装包](https://github.com/op7418/CodePilot/releases/download/v${VERSION}/CodePilot.Setup.${VERSION}.exe)
 
           ## 安装说明
 

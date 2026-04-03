@@ -315,15 +315,41 @@ export const VENDOR_PRESETS: VendorPreset[] = [
     sdkProxyOnly: true,
   },
 
-  // ── Xiaomi MiMo ──
+  // ── Xiaomi MiMo (按量付费) ──
   {
     key: 'xiaomi-mimo',
     name: 'Xiaomi MiMo',
-    description: 'Xiaomi MiMo Coding Plan — MiMo-V2-Pro',
-    descriptionZh: '小米 MiMo 编程套餐 — MiMo-V2-Pro',
+    description: 'Xiaomi MiMo Pay-as-you-go API — MiMo-V2-Pro',
+    descriptionZh: '小米 MiMo 按量付费 — MiMo-V2-Pro',
     protocol: 'anthropic',
     authStyle: 'auth_token',
     baseUrl: 'https://api.xiaomimimo.com/anthropic',
+    defaultEnvOverrides: {
+      ANTHROPIC_AUTH_TOKEN: '',
+    },
+    defaultModels: [
+      { modelId: 'sonnet', upstreamModelId: 'mimo-v2-pro', displayName: 'MiMo-V2-Pro', role: 'default' },
+    ],
+    defaultRoleModels: {
+      default: 'mimo-v2-pro',
+      sonnet: 'mimo-v2-pro',
+      opus: 'mimo-v2-pro',
+      haiku: 'mimo-v2-pro',
+    },
+    fields: ['api_key'],
+    iconKey: 'xiaomi-mimo',
+    sdkProxyOnly: true,
+  },
+
+  // ── Xiaomi MiMo Token Plan (订阅套餐) ──
+  {
+    key: 'xiaomi-mimo-token-plan',
+    name: 'Xiaomi MiMo Token Plan',
+    description: 'Xiaomi MiMo Token Plan subscription — MiMo-V2-Pro',
+    descriptionZh: '小米 MiMo Token Plan 订阅套餐 — MiMo-V2-Pro',
+    protocol: 'anthropic',
+    authStyle: 'auth_token',
+    baseUrl: 'https://token-plan-cn.xiaomimimo.com/anthropic',
     defaultEnvOverrides: {
       ANTHROPIC_AUTH_TOKEN: '',
     },
