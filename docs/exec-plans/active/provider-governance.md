@@ -33,7 +33,7 @@
 | Phase 3 | 配置时连通性验证 | ✅ 已完成 | POST /api/providers/test + testProviderConnection() |
 | Phase 4 | 用户引导 UX（服务商信息面板） | ✅ 已完成 | QUICK_PRESETS 去重（-181 行），meta 流通到前端 |
 | Phase 5 | 运行时错误治理 | ✅ 已完成 | RecoveryAction + providerMeta → 分类错误码 + 恢复按钮 |
-| Phase 6 | 模型目录动态化 | 📋 待开始 | |
+| Phase 6 | 模型目录动态化 | ✅ 已完成 | per-provider model CRUD API（GET/POST/DELETE） |
 
 ## 决策日志
 
