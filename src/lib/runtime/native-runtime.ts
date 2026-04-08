@@ -33,7 +33,9 @@ export const nativeRuntime: AgentRuntime = {
     const abortController = options.abortController || new AbortController();
     activeControllers.set(options.sessionId, abortController);
 
-    const maxSteps = (options.runtimeOptions?.maxSteps as number) || undefined;
+    const ro = options.runtimeOptions || {};
+    const maxSteps = (ro.maxSteps as number) || undefined;
+    const files = ro.files as import('@/types').FileAttachment[] | undefined;
 
     const stream = runAgentLoop({
       prompt: options.prompt,
@@ -54,6 +56,7 @@ export const nativeRuntime: AgentRuntime = {
       maxSteps,
       autoTrigger: options.autoTrigger,
       onRuntimeStatusChange: options.onRuntimeStatusChange,
+      files,
     });
 
     // Clean up controller when stream ends

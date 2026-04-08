@@ -60,6 +60,8 @@ export interface AgentLoopOptions {
   autoTrigger?: boolean;
   /** Bypass all permission checks (full_access profile) */
   bypassPermissions?: boolean;
+  /** File attachments from the user (images, documents, etc.) */
+  files?: import('@/types').FileAttachment[];
   /** Callback when runtime status changes */
   onRuntimeStatusChange?: (status: string) => void;
 }
@@ -100,6 +102,7 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
     permissionMode,
     mcpServers,
     bypassPermissions,
+    files,
   } = options;
 
   return new ReadableStream<string>({
@@ -133,6 +136,9 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
             workingDirectory: workingDirectory || process.cwd(),
             prompt,
             mode: permissionMode,
+            providerId,
+            sessionProviderId,
+            model: modelOverride || sessionModel,
             permissionContext: bypassPermissions ? undefined : {
               sessionId,
               permissionMode: (permissionMode || 'normal') as PermissionMode,
@@ -170,7 +176,20 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
         const alreadyInHistory = lastMsg?.role === 'user' &&
           typeof lastMsg.content === 'string' && lastMsg.content === prompt;
         if (!alreadyInHistory) {
-          historyMessages.push({ role: 'user' as const, content: prompt });
+          // Build user message content — text + optional file attachments (images, etc.)
+          if (files && files.length > 0) {
+            const parts: Array<{ type: 'text'; text: string } | { type: 'file'; data: string; mediaType: string }> = [
+              { type: 'text', text: prompt },
+            ];
+            for (const file of files) {
+              if (file.data && file.type) {
+                parts.push({ type: 'file', data: file.data, mediaType: file.type });
+              }
+            }
+            historyMessages.push({ role: 'user' as const, content: parts as any });
+          } else {
+            historyMessages.push({ role: 'user' as const, content: prompt });
+          }
         }
 
         // Debug: uncomment to trace message assembly issues

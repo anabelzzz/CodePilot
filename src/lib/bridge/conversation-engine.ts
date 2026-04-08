@@ -212,13 +212,11 @@ export async function processMessage(
       }
     }
 
-    // Load MCP servers — mirrors chat route logic:
-    // Non-Anthropic providers or native runtime need ALL servers;
-    // SDK runtime only needs placeholder-processed ones.
-    const isNonAnthropicBridge = effectiveProviderId === 'openai-oauth';
-    const cliEnabled = getSetting('cli_enabled') !== 'false';
-    const bridgeWillUseNative = isNonAnthropicBridge || !cliEnabled;
-    const mcpServers = bridgeWillUseNative ? loadAllMcpServers() : loadCodePilotMcpServers();
+    // Load MCP servers using shared runtime prediction (same logic as chat route)
+    const { predictNativeRuntime } = require('../runtime') as typeof import('../runtime');
+    const mcpServers = predictNativeRuntime(effectiveProviderId)
+      ? loadAllMcpServers()
+      : loadCodePilotMcpServers();
 
     // Unified context assembly — adds CLI tools context (and workspace prompt if applicable)
     const assembled = await assembleContext({

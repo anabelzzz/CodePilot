@@ -24,6 +24,12 @@ export interface AssembleToolsOptions {
   workingDirectory?: string;
   prompt?: string;
   mode?: string;
+  /** Provider ID (passed to sub-agents for inheritance) */
+  providerId?: string;
+  /** Session provider ID (passed to sub-agents for inheritance) */
+  sessionProviderId?: string;
+  /** Model (passed to sub-agents for inheritance) */
+  model?: string;
   /** Permission context — when set, tools are wrapped with permission checks */
   permissionContext?: {
     sessionId: string;
@@ -52,6 +58,9 @@ export function assembleTools(options: AssembleToolsOptions = {}): AssembleTools
   const builtinTools = createBuiltinTools({
     workingDirectory: cwd,
     sessionId: options.permissionContext?.sessionId,
+    providerId: options.providerId,
+    sessionProviderId: options.sessionProviderId,
+    model: options.model,
     permissionMode: options.permissionContext?.permissionMode,
     emitSSE: options.permissionContext?.emitSSE,
     abortSignal: options.permissionContext?.abortSignal,
