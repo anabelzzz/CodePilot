@@ -1,15 +1,11 @@
 /**
  * Feishu Card Streaming Controller
  *
- * Manages streaming card lifecycle via CardKit v2 API.
- * State machine: idle → creating → streaming → completed | interrupted | error
+ * Manages streaming card lifecycle via CardKit v1 API.
+ * Uses cardkit.v1.card for card CRUD, cardkit.v1.cardElement.content
+ * for streaming text updates (typewriter effect).
  *
- * Features:
- * - Thinking state display (💭 Thinking...)
- * - Streaming text with throttled updates
- * - Tool call progress indicators (🔄/✅/❌)
- * - Final card with status footer and elapsed time
- * - Markdown optimization for Feishu rendering
+ * State machine: idle → creating → streaming → completed | interrupted | error
  */
 
 import type * as lark from '@larksuiteoapi/node-sdk';
@@ -17,30 +13,17 @@ import type { CardStreamController, ToolCallInfo } from '../types';
 import type { CardStreamConfig } from './types';
 import { optimizeMarkdown } from './outbound';
 
-/** Extract error message from unknown catch value */
 function errMsg(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
 }
 
-/** Lark IM message response shape (shared by create/reply) */
 interface LarkMessageResponse {
   code?: number;
   msg?: string;
   data?: { message_id?: string };
 }
 
-/** CardKit v2 API shape (not in SDK types — accessed via runtime) */
-interface CardKitV2 {
-  card: {
-    create(payload: { data: { type: string; data: string } }): Promise<{ data?: { card_id?: string } }>;
-    streamContent(payload: { path: { card_id: string }; data: { content: string; sequence: number } }): Promise<unknown>;
-    setStreamingMode(payload: { path: { card_id: string }; data: { streaming_mode: boolean; sequence: number } }): Promise<unknown>;
-    update(payload: { path: { card_id: string }; data: { type: string; data: string; sequence: number } }): Promise<unknown>;
-  };
-}
-
-/** Card element in Schema V2 cards */
 interface CardElement {
   tag: string;
   content?: string;
@@ -50,12 +33,8 @@ interface CardElement {
   [key: string]: unknown;
 }
 
-/** Access cardkit.v2 from lark.Client (not typed in SDK) */
-function getCardKitV2(client: lark.Client): CardKitV2 {
-  return (client as unknown as { cardkit: { v2: CardKitV2 } }).cardkit.v2;
-}
-
 const LOG_TAG = '[card-controller]';
+const STREAMING_ELEMENT_ID = 'streaming_content';
 
 interface CardState {
   cardId: string;
@@ -103,7 +82,6 @@ class FeishuCardStreamController implements CardStreamController {
 
   async create(chatId: string, initialText: string, replyToMessageId?: string): Promise<string> {
     try {
-      // 1. Create streaming card via CardKit v2
       const cardBody = {
         schema: '2.0',
         config: {
@@ -117,12 +95,12 @@ class FeishuCardStreamController implements CardStreamController {
             content: initialText || '💭 Thinking...',
             text_align: 'left',
             text_size: 'normal',
-            element_id: 'streaming_content',
+            element_id: STREAMING_ELEMENT_ID,
           }],
         },
       };
 
-      const createResp = await getCardKitV2(this.client).card.create({
+      const createResp = await this.client.cardkit.v1.card.create({
         data: { type: 'card_json', data: JSON.stringify(cardBody) },
       });
       const cardId = createResp?.data?.card_id;
@@ -207,8 +185,8 @@ class FeishuCardStreamController implements CardStreamController {
 
     try {
       state.sequence++;
-      await getCardKitV2(this.client).card.streamContent({
-        path: { card_id: state.cardId },
+      await this.client.cardkit.v1.cardElement.content({
+        path: { card_id: state.cardId, element_id: STREAMING_ELEMENT_ID },
         data: { content, sequence: state.sequence },
       });
       state.lastUpdateAt = Date.now();
@@ -259,11 +237,13 @@ class FeishuCardStreamController implements CardStreamController {
     }
 
     try {
-      // Close streaming mode
       state.sequence++;
-      await getCardKitV2(this.client).card.setStreamingMode({
+      await this.client.cardkit.v1.card.settings({
         path: { card_id: state.cardId },
-        data: { streaming_mode: false, sequence: state.sequence },
+        data: {
+          settings: JSON.stringify({ config: { streaming_mode: false } }),
+          sequence: state.sequence,
+        },
       });
 
       // Build final card elements
@@ -274,7 +254,7 @@ class FeishuCardStreamController implements CardStreamController {
         tag: 'markdown',
         content: optimizeMarkdown(finalText),
         text_size: 'normal',
-        element_id: 'streaming_content',
+        element_id: STREAMING_ELEMENT_ID,
       });
 
       // Tool call summary (if any tools were used)
@@ -326,9 +306,12 @@ class FeishuCardStreamController implements CardStreamController {
       };
 
       state.sequence++;
-      await getCardKitV2(this.client).card.update({
+      await this.client.cardkit.v1.card.update({
         path: { card_id: state.cardId },
-        data: { type: 'card_json', data: JSON.stringify(finalCard), sequence: state.sequence },
+        data: {
+          card: { type: 'card_json' as const, data: JSON.stringify(finalCard) },
+          sequence: state.sequence,
+        },
       });
     } catch (err: unknown) {
       console.error(LOG_TAG, 'Finalize failed:', errMsg(err));
