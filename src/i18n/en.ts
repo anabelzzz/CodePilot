@@ -1266,11 +1266,11 @@ const en = {
 
   // ── Setup Center ──────────────────────────────────────────────
   'setup.title': 'Welcome to CodePilot',
-  'setup.subtitle': 'Let\'s get you set up in a few quick steps.',
+  'setup.subtitle': 'Configure your Agent engine, providers, and workspace.',
   'setup.skipAndEnter': 'Skip and Enter',
   'setup.progress': '{completed}/3 completed',
   'setup.openSetupCenter': 'Initial Setup Guide',
-  'setup.openSetupCenterDesc': 'Check or reconfigure Claude Code connection, API provider, and default project directory',
+  'setup.openSetupCenterDesc': 'Configure Agent engine (AI SDK / Claude Code), API providers, and default project directory',
   'setup.open': 'Open',
 
   // Setup: Welcome card
@@ -1278,8 +1278,8 @@ const en = {
   'setup.welcome.description': 'CodePilot is a multi-model AI agent desktop client. Connect any AI provider, extend with MCP & skills, and let your assistant learn your workflow.',
 
   // Setup: Claude Code card
-  'setup.claude.title': 'Claude Code CLI',
-  'setup.claude.description': 'CodePilot requires the Claude Code CLI to function.',
+  'setup.claude.title': 'Claude Code CLI (Optional)',
+  'setup.claude.description': 'Install Claude Code CLI for full command-line capabilities. CodePilot works without it via the AI SDK engine.',
   'setup.claude.detected': 'Claude Code detected',
   'setup.claude.notFound': 'Claude Code not found',
   'setup.claude.conflict': 'Multiple installations detected — this may cause version conflicts',

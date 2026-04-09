@@ -1263,11 +1263,11 @@ const zh: Record<TranslationKey, string> = {
 
   // ── Setup Center ──────────────────────────────────────────────
   'setup.title': '欢迎使用 CodePilot',
-  'setup.subtitle': '让我们快速完成几个设置步骤。',
+  'setup.subtitle': '配置 Agent 引擎、服务商和工作目录。',
   'setup.skipAndEnter': '跳过并进入',
   'setup.progress': '{completed}/3 已完成',
   'setup.openSetupCenter': '首次设置引导',
-  'setup.openSetupCenterDesc': '检查或重新配置 Claude Code 连接、API 提供商和默认项目目录',
+  'setup.openSetupCenterDesc': '配置 Agent 引擎（AI SDK / Claude Code）、API 服务商和默认项目目录',
   'setup.open': '打开',
 
   // Setup: Welcome card
@@ -1275,8 +1275,8 @@ const zh: Record<TranslationKey, string> = {
   'setup.welcome.description': 'CodePilot 是多模型 AI Agent 桌面客户端。连接任意 AI 服务商，通过 MCP 和 Skills 扩展能力，让你的助理学会你的工作方式。',
 
   // Setup: Claude Code card
-  'setup.claude.title': 'Claude Code CLI',
-  'setup.claude.description': 'CodePilot 需要 Claude Code CLI 才能正常工作。',
+  'setup.claude.title': 'Claude Code CLI（可选）',
+  'setup.claude.description': '安装 Claude Code CLI 可获得完整命令行能力。不安装也能通过 AI SDK 引擎正常使用。',
   'setup.claude.detected': '已检测到 Claude Code',
   'setup.claude.notFound': '未找到 Claude Code',
   'setup.claude.conflict': '检测到多个安装版本，可能导致版本冲突',
