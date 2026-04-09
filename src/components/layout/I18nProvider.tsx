@@ -33,12 +33,16 @@ export function I18nProvider({ children }: { children: ReactNode }) {
         }
       } catch { /* ignore */ }
 
-      // No persisted locale — detect from browser language
+      // No persisted locale — detect system language
+      // Works across: Electron (Chromium OS locale), browser, SSR (skipped)
       if (typeof navigator !== 'undefined') {
-        const lang = navigator.language || '';
-        if (lang.startsWith('zh')) {
+        const candidates = [
+          ...(navigator.languages || []),  // user's preferred language list
+          navigator.language,               // primary browser/OS language
+        ].filter(Boolean);
+        const isZh = candidates.some(lang => lang.startsWith('zh'));
+        if (isZh) {
           setLocaleState('zh');
-          // Persist so we don't detect again
           fetch('/api/settings/app', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },

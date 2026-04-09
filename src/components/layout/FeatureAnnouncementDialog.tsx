@@ -42,7 +42,7 @@ export function FeatureAnnouncementDialog() {
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
-            {isZh ? '新版本更新' : "What's New"}
+            {isZh ? '新功能：独立 Agent 引擎 + OpenAI 支持' : 'New: Independent Agent Engine + OpenAI Support'}
           </DialogTitle>
         </DialogHeader>
 
@@ -56,17 +56,21 @@ export function FeatureAnnouncementDialog() {
 
           {isZh ? (
             <>
-              <p className="font-medium">双引擎可选</p>
-              <p className="text-muted-foreground">你可以在两种 Agent 引擎之间切换：<span className="text-foreground">AI SDK</span>（开箱即用，支持多个模型服务商）和 <span className="text-foreground">Claude Code</span>（需安装 CLI，提供完整命令行能力）。</p>
-              <p className="font-medium">OpenAI 模型支持</p>
-              <p className="text-muted-foreground">ChatGPT Plus/Pro 用户可通过 OAuth 登录后使用 GPT-5.4 等模型。</p>
+              <p>CodePilot 现在可以脱离 Claude Code CLI 独立运行了。</p>
+              <div className="space-y-2 text-muted-foreground">
+                <p><span className="text-foreground font-medium">AI SDK 引擎</span> — 无需安装 CLI，支持所有已配置的服务商</p>
+                <p><span className="text-foreground font-medium">Claude Code 引擎</span> — 通过 CLI 驱动，获得完整的命令行能力</p>
+              </div>
+              <p>同时支持 <span className="font-medium">OpenAI 授权登录</span>，ChatGPT Plus/Pro 用户可在服务商设置中登录后直接使用 GPT-5.4 等模型。</p>
             </>
           ) : (
             <>
-              <p className="font-medium">Dual Engine Support</p>
-              <p className="text-muted-foreground">Switch between two Agent engines: <span className="text-foreground">AI SDK</span> (works out of the box, multi-provider) and <span className="text-foreground">Claude Code</span> (requires CLI, full command-line capabilities).</p>
-              <p className="font-medium">OpenAI Models</p>
-              <p className="text-muted-foreground">ChatGPT Plus/Pro users can sign in via OAuth to use GPT-5.4 and more.</p>
+              <p>CodePilot can now run independently without the Claude Code CLI.</p>
+              <div className="space-y-2 text-muted-foreground">
+                <p><span className="text-foreground font-medium">AI SDK engine</span> — no CLI needed, works with all configured providers</p>
+                <p><span className="text-foreground font-medium">Claude Code engine</span> — driven by CLI for full command-line capabilities</p>
+              </div>
+              <p>Also supports <span className="font-medium">OpenAI OAuth login</span> — ChatGPT Plus/Pro users can sign in under Providers to use GPT-5.4 and more.</p>
             </>
           )}
         </div>
