@@ -1192,6 +1192,117 @@ export function clearSessionMessages(sessionId: string): void {
 }
 
 // ==========================================
+// Session History Search (codepilot_session_search tool)
+// ==========================================
+
+export interface SessionSearchResult {
+  messageId: string;
+  sessionId: string;
+  sessionTitle: string;
+  role: 'user' | 'assistant';
+  createdAt: string;
+  /** Snippet extracted from content with query context (up to ~200 chars). */
+  snippet: string;
+}
+
+/**
+ * Full-text search across message history.
+ *
+ * Uses SQL LIKE for portability (no FTS5 dependency). Matches are case-insensitive
+ * via LIKE's default behavior with ASCII text. For CJK queries the match is exact
+ * byte-sequence substring — good enough for v1.
+ *
+ * Results are ordered by created_at DESC (most recent first) and joined with
+ * chat_sessions to include session titles. Heartbeat ACK messages are excluded
+ * from results when the schema has that column.
+ *
+ * @param query Search term. Wildcards `_` and `%` are treated as literals.
+ * @param options.sessionId Optional filter to a specific session.
+ * @param options.limit Max results (default 5).
+ */
+export function searchMessages(
+  query: string,
+  options: { sessionId?: string; limit?: number } = {},
+): SessionSearchResult[] {
+  const db = getDb();
+  const limit = Math.max(1, Math.min(options.limit ?? 5, 100));
+
+  if (!query || query.trim() === '') return [];
+
+  // Escape LIKE wildcards in the user query so they're treated as literals.
+  const escapedQuery = query.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+  const pattern = `%${escapedQuery}%`;
+
+  // Detect optional heartbeat ack column (newer schemas have it)
+  let hasAckColumn = false;
+  try {
+    const cols = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    hasAckColumn = cols.some(c => c.name === 'is_heartbeat_ack');
+  } catch { /* ignore — assume no ack column */ }
+
+  const ackFilter = hasAckColumn ? ' AND (m.is_heartbeat_ack = 0 OR m.is_heartbeat_ack IS NULL)' : '';
+
+  let sql = `
+    SELECT
+      m.id AS messageId,
+      m.session_id AS sessionId,
+      COALESCE(s.title, '(untitled)') AS sessionTitle,
+      m.role AS role,
+      m.created_at AS createdAt,
+      m.content AS content
+    FROM messages m
+    LEFT JOIN chat_sessions s ON s.id = m.session_id
+    WHERE m.content LIKE ? ESCAPE '\\'${ackFilter}
+  `;
+  const params: unknown[] = [pattern];
+
+  if (options.sessionId) {
+    sql += ' AND m.session_id = ?';
+    params.push(options.sessionId);
+  }
+
+  sql += ' ORDER BY m.created_at DESC LIMIT ?';
+  params.push(limit);
+
+  const rows = db.prepare(sql).all(...params) as Array<{
+    messageId: string;
+    sessionId: string;
+    sessionTitle: string;
+    role: 'user' | 'assistant';
+    createdAt: string;
+    content: string;
+  }>;
+
+  // Build snippet around the first match position in each row.
+  const lowerQuery = query.toLowerCase();
+  return rows.map(row => ({
+    messageId: row.messageId,
+    sessionId: row.sessionId,
+    sessionTitle: row.sessionTitle,
+    role: row.role,
+    createdAt: row.createdAt,
+    snippet: buildSnippet(row.content, lowerQuery),
+  }));
+}
+
+/** Extract a ~200-char snippet around the first match (case-insensitive). */
+function buildSnippet(content: string, lowerQuery: string): string {
+  if (!content) return '';
+  const lowerContent = content.toLowerCase();
+  const idx = lowerContent.indexOf(lowerQuery);
+  if (idx === -1) {
+    // Fall back to the first 200 chars — happens when content is a JSON blob
+    // and the query matches bytes inside quoted strings.
+    return content.length > 200 ? content.slice(0, 200) + '…' : content;
+  }
+  const start = Math.max(0, idx - 80);
+  const end = Math.min(content.length, idx + lowerQuery.length + 120);
+  const prefix = start > 0 ? '…' : '';
+  const suffix = end < content.length ? '…' : '';
+  return prefix + content.slice(start, end) + suffix;
+}
+
+// ==========================================
 // Settings Operations
 // ==========================================
 

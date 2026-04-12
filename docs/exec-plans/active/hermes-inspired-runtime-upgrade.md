@@ -61,7 +61,7 @@
 | 3.1 | 并行安全调度器 | ✅ 已完成 | (本 commit) | 最小可行版：模块 + 测试全通过，未 wire 进 agent-tools.ts。AI SDK `tool({execute})` 没有 batch 级 hook，完整 wiring 需要独立 follow-up。详见 parallel-safety.ts 文件头。|
 | 3.2 | 辅助模型解析 | ✅ 已完成 | (本 commit) | 纯函数 `routeAuxiliaryModel` + 薄 wrapper `resolveAuxiliaryModel`；5 层解析链；never null 主模型兜底；20+ 测试全通过 |
 | 3.3 | 渐进子目录 hint | ✅ 已完成 | (本 commit) | 完整 port，包含自写 shell tokenizer；20+ 测试（含真实文件系统 fixture）全通过；集成到 agent-tools.ts 推后到独立 follow-up |
-| 3.4 | Session 历史搜索 | 📋 待开始 | — | — |
+| 3.4 | Session 历史搜索 | ✅ 已完成 | (本 commit) | `searchMessages` DB 函数 + `codepilot_session_search` 工具 + builtin-tools 注册；12 测试含真实 SQLite DB fixture 全通过；**已完整 wire up**（与 memory-search 平级） |
 | 3.5a | 长对话压缩 - 接线 + token 预算 | 📋 待开始 | — | — |
 | 3.5b | 长对话压缩 - LLM 摘要 | 📋 待开始 | — | — |
 | 3.6 | Skill 自动创建 nudge | 📋 待开始 | — | — |
