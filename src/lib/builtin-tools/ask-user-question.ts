@@ -20,6 +20,14 @@
  * The Zod schema only covers the MODEL's input (questions). The `answers`
  * field is injected by the permission flow and accessed via a runtime cast
  * in execute — this matches the SDK's behavior.
+ *
+ * Known limitation — IM/bridge sessions:
+ * The bridge permission broker (permission-broker.ts) only supports
+ * Allow/Deny responses, not structured updatedInput with answers.
+ * Bridge users see a generic permission card and can approve/deny but
+ * cannot pick options. Full bridge support requires interactive IM card
+ * UIs per platform (Telegram inline keyboard, Feishu interactive card,
+ * etc.) — tracked as a separate follow-up.
  */
 
 import { tool } from 'ai';
