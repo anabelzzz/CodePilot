@@ -54,6 +54,12 @@ export class FeishuChannelPlugin implements ChannelPlugin<FeishuConfig> {
   private botOpenId = '';
   /** Periodic retry timer for resolveBotIdentity when the initial probe fails. */
   private identityRetryTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Bumps on each start/stop so in-flight identity probes from a previous
+   * start can detect they are stale and bail out before mutating state or
+   * scheduling new timers.
+   */
+  private identityGeneration = 0;
 
   loadConfig(): FeishuConfig | null {
     this.config = loadFeishuConfig();
@@ -193,7 +199,13 @@ export class FeishuChannelPlugin implements ChannelPlugin<FeishuConfig> {
     // Resolve bot identity so mention filtering works (#384).
     // Fire-and-forget with retries — if it fails, mention detection simply no-ops
     // but the bot still functions normally for DMs and un-gated groups.
-    this.resolveBotIdentity().catch((err) => {
+    //
+    // Capture the current generation so stop() → new start() cycles can cancel
+    // any in-flight probe from the previous run (prevents a stale probe from
+    // writing botOpenId on a stopped plugin or scheduling a new retry timer).
+    this.identityGeneration += 1;
+    const probeGeneration = this.identityGeneration;
+    this.resolveBotIdentity(probeGeneration).catch((err) => {
       console.warn('[feishu/plugin]', 'Bot identity resolution failed:', err);
     });
   }
@@ -209,12 +221,19 @@ export class FeishuChannelPlugin implements ChannelPlugin<FeishuConfig> {
    * - Until resolved, requireMention fails open (inbound.ts gate checks
    *   botOpenId truthiness). This avoids dropping every group message during
    *   startup but does mean un-mentioned messages slip through the gap.
+   *
+   * The probe carries a generation snapshot. If stop() (or a subsequent
+   * start()) has bumped the generation since this probe was launched, all
+   * mutations and the retry-timer schedule are suppressed so a stale probe
+   * can't repopulate state after shutdown.
    */
-  private async resolveBotIdentity(maxRetries = 3): Promise<void> {
+  private async resolveBotIdentity(generation: number, maxRetries = 3): Promise<void> {
     const client = this.gateway?.getRestClient();
     if (!client) return;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      if (this.identityGeneration !== generation) return; // stale — bail
       const info = await getBotInfo(client);
+      if (this.identityGeneration !== generation) return; // stopped during await
       if (info?.openId) {
         this.botOpenId = info.openId;
         if (this.config?.requireMention) {
@@ -226,23 +245,35 @@ export class FeishuChannelPlugin implements ChannelPlugin<FeishuConfig> {
         await new Promise((r) => setTimeout(r, 2000 * attempt));
       }
     }
+    if (this.identityGeneration !== generation) return; // don't schedule stale retries
     console.warn(
       '[feishu/plugin]',
       'Could not resolve bot identity — mention detection disabled; will retry every 60s'
     );
-    this.startIdentityRetryTimer();
+    this.startIdentityRetryTimer(generation);
   }
 
   /**
    * Slow background retry to recover from transient bot identity failures.
    * Polls every 60s until identity resolves, then stops. Canceled on stop().
+   *
+   * The timer callback checks the generation so an interval scheduled by a
+   * previous start() cycle can't mutate state on a fresh plugin instance.
    */
-  private startIdentityRetryTimer(): void {
+  private startIdentityRetryTimer(generation: number): void {
     if (this.identityRetryTimer) return;
     this.identityRetryTimer = setInterval(async () => {
+      if (this.identityGeneration !== generation) {
+        if (this.identityRetryTimer) {
+          clearInterval(this.identityRetryTimer);
+          this.identityRetryTimer = null;
+        }
+        return;
+      }
       const client = this.gateway?.getRestClient();
       if (!client) return;
       const info = await getBotInfo(client);
+      if (this.identityGeneration !== generation) return; // stopped during await
       if (info?.openId) {
         this.botOpenId = info.openId;
         if (this.identityRetryTimer) {
@@ -257,6 +288,9 @@ export class FeishuChannelPlugin implements ChannelPlugin<FeishuConfig> {
   }
 
   async stop(): Promise<void> {
+    // Invalidate any in-flight identity probe so it can't mutate state
+    // or schedule a new retry timer after shutdown.
+    this.identityGeneration += 1;
     if (this.identityRetryTimer) {
       clearInterval(this.identityRetryTimer);
       this.identityRetryTimer = null;
