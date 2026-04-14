@@ -128,8 +128,21 @@
 
 #### B-012 多 Bridge 适配器同时启用互相干扰
 - **Issue:** [#455](https://github.com/op7418/CodePilot/issues/455)
-- **状态:** 🔴 未修复
-- **根因:** Bridge adapter 生命周期不隔离，一个 adapter 重连影响全局路由
+- **状态:** ⚪ 需重新诊断（2026-04-14 代码核实：隔离层面看不出问题）
+- **代码核实:**
+  - `FeishuChannelPlugin` 状态都是 instance 字段（`channels/feishu/index.ts:42-49`），无 globalThis 共享
+  - `state.adapters` 是 per-type Map（`bridge-manager.ts:203`）
+  - 每个 adapter 有独立 abort controller（`bridge-manager.ts:452`）
+  - 错误追踪也是 per-adapter（`adapterMeta`）
+- **下一步:** 需向用户收集具体复现步骤和日志——可能是飞书/QQ 单独的问题，或者是 `bridgeModeActive` 这类全局 flag 的交互
+
+#### B-017 Feishu WSClient 长连接稳定性
+- **Issues:** [#323](https://github.com/op7418/CodePilot/issues/323), [#288](https://github.com/op7418/CodePilot/issues/288), [#199](https://github.com/op7418/CodePilot/issues/199), [#149](https://github.com/op7418/CodePilot/issues/149), [#148](https://github.com/op7418/CodePilot/issues/148)
+- **状态:** ⚪ 需重新诊断
+- **现象:** Feishu WebSocket 长连接失败、断连、测试连接失败
+- **已知错误码:** `code 1000040345 system busy`（飞书服务端）
+- **下一步:** 收集 WSClient 错误日志和复现环境；考虑在 `gateway.ts` 的 `start()` 外层加重连+健康检查
+- **关联:** `@larksuiteoapi/node-sdk` v1.59.0 的 WSClient 不提供 clean stop（`gateway.ts:180-186` 注释）
 
 #### B-013 连接测试误报失败
 - **状态:** 🟡 部分修复（v0.48.2 修了 masked key 回填）

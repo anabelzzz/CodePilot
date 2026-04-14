@@ -537,6 +537,14 @@ async function handleMessage(
       return;
     }
 
+    // AskUserQuestion option button (#282)
+    if (msg.callbackData.startsWith('ask:')) {
+      broker.handleAskUserQuestionCallback(msg.callbackData, msg.address.chatId, msg.callbackMessageId);
+      // No confirmation — the model will respond to the chosen answer naturally.
+      ack();
+      return;
+    }
+
     // Permission buttons
     const handled = broker.handlePermissionCallback(msg.callbackData, msg.address.chatId, msg.callbackMessageId);
     if (handled) {
@@ -740,8 +748,22 @@ async function handleMessage(
   try {
     // Pass permission callback so requests are forwarded to IM immediately
     // during streaming (the stream blocks until permission is resolved).
-    // Use text or empty string for image-only messages (prompt is still required by streamClaude)
-    const promptText = text || (hasAttachments ? 'Describe this image.' : '');
+    // Type-aware fallback prompt for attachment-only turns — "Describe this image"
+    // was misleading when audio/video/file types were added (#291).
+    let promptText = text;
+    if (!promptText && hasAttachments) {
+      const types = new Set((msg.attachments || []).map((a) => (a.type || '').split('/')[0]));
+      if (types.has('image') && types.size === 1) {
+        promptText = 'Describe this image.';
+      } else if (types.has('audio') && types.size === 1) {
+        promptText = 'Transcribe and summarize this audio.';
+      } else if (types.has('video') && types.size === 1) {
+        promptText = 'Describe what happens in this video.';
+      } else {
+        // Mixed or file: let the model decide based on attachment content.
+        promptText = 'Please review the attached file(s).';
+      }
+    }
 
     const result = await engine.processMessage(binding, promptText, async (perm) => {
       await broker.forwardPermissionRequest(

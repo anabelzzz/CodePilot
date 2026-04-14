@@ -32,12 +32,66 @@ const recentPermissionForwards = new Map<string, number>();
  * flow. These tools are explicitly denied at the broker level so the
  * model gets a clear reason and can fall back to plain text.
  *
+ * AskUserQuestion is now specifically supported via buildAskUserQuestionCard()
+ * and handleAskUserQuestionCallback() below (#282).
+ *
  * Exported for unit testing — the check itself is pure (no IO).
  */
-const BRIDGE_UNSUPPORTED_INTERACTIVE_TOOLS = new Set(['AskUserQuestion']);
+const BRIDGE_UNSUPPORTED_INTERACTIVE_TOOLS = new Set<string>();
 
 export function isBridgeUnsupportedInteractiveTool(toolName: string): boolean {
   return BRIDGE_UNSUPPORTED_INTERACTIVE_TOOLS.has(toolName);
+}
+
+// ── AskUserQuestion schema (matches builtin-tools/ask-user-question.ts) ──
+interface AskUserQuestion {
+  header?: string;
+  question: string;
+  options: Array<{ label: string; description?: string }>;
+  multiSelect?: boolean;
+}
+
+interface AskUserQuestionInput {
+  questions: AskUserQuestion[];
+}
+
+/**
+ * Build an interactive AskUserQuestion card for bridge channels that support buttons.
+ * Returns null if the tool input doesn't look like AskUserQuestion (fall back to default).
+ *
+ * Limitation: only the FIRST question is rendered interactively — multi-question calls
+ * are rare and would bloat the card. If more are needed, the first answer can be
+ * followed by another AskUserQuestion call.
+ */
+function buildAskUserQuestionCard(
+  permissionRequestId: string,
+  toolInput: Record<string, unknown>,
+): { text: string; inlineButtons: { text: string; callbackData: string }[][] } | null {
+  const input = toolInput as unknown as AskUserQuestionInput;
+  const question = input?.questions?.[0];
+  if (!question || !Array.isArray(question.options) || question.options.length === 0) {
+    return null;
+  }
+
+  const lines: string[] = [];
+  if (question.header) lines.push(`<b>${escapeHtml(question.header)}</b>`);
+  lines.push(escapeHtml(question.question));
+  if (question.options.some((o) => o.description)) {
+    lines.push('');
+    for (const opt of question.options) {
+      if (opt.description) {
+        lines.push(`• <b>${escapeHtml(opt.label)}</b>: ${escapeHtml(opt.description)}`);
+      }
+    }
+  }
+
+  // Each button carries the option index. Callback format: ask:{requestId}:{optionIndex}
+  const buttons = question.options.map((opt, idx) => ({
+    text: opt.label,
+    callbackData: `ask:${permissionRequestId}:${idx}`,
+  }));
+
+  return { text: lines.join('\n'), inlineButtons: [buttons] };
 }
 
 export async function forwardPermissionRequest(
@@ -60,7 +114,9 @@ export async function forwardPermissionRequest(
   }
 
   // Check if this session uses full_access permission profile — auto-approve without IM notification
-  if (sessionId) {
+  // Note: AskUserQuestion still needs the user to pick an option, so we don't auto-approve it even
+  // under full_access (the user's choice carries semantic meaning, not just consent).
+  if (sessionId && toolName !== 'AskUserQuestion') {
     const session = getSession(sessionId);
     if (session?.permission_profile === 'full_access') {
       console.log(`[bridge] Auto-approved permission ${permissionRequestId} (tool=${toolName}) due to full_access profile`);
@@ -83,69 +139,177 @@ export async function forwardPermissionRequest(
 
   console.log(`[permission-broker] Forwarding permission request: ${permissionRequestId} tool=${toolName} channel=${adapter.channelType}`);
 
-  // Format the input summary (truncated)
-  const inputStr = JSON.stringify(toolInput, null, 2);
-  const truncatedInput = inputStr.length > 300
-    ? inputStr.slice(0, 300) + '...'
-    : inputStr;
-
-  // Channels without inline button support (e.g. QQ) need text-based
+  // Channels without inline button support (e.g. QQ, Weixin) need text-based
   // permission commands. Check if the adapter ignores inlineButtons.
   const supportsButtons = !['qq', 'weixin'].includes(adapter.channelType);
 
-  const textLines = [
-    `<b>Permission Required</b>`,
-    ``,
-    `Tool: <code>${escapeHtml(toolName)}</code>`,
-    `<pre>${escapeHtml(truncatedInput)}</pre>`,
-    ``,
-  ];
-
-  if (supportsButtons) {
-    textLines.push(`Choose an action:`);
-  } else {
-    // Text-based permission commands for channels without inline buttons
-    textLines.push(
-      `Reply with one of:`,
-      `/perm allow ${permissionRequestId}`,
-      `/perm allow_session ${permissionRequestId}`,
-      `/perm deny ${permissionRequestId}`,
-    );
+  // AskUserQuestion requires option-picking UX which isn't representable in
+  // channels without inline buttons. Rather than degrading to Allow/Deny (which
+  // would execute the tool with empty answers), deny with a clear reason and
+  // let the model fall back to plain-text questions.
+  if (toolName === 'AskUserQuestion' && !supportsButtons) {
+    console.log(`[bridge] Denied AskUserQuestion (${permissionRequestId}) on ${adapter.channelType} — option buttons not supported on this channel`);
+    resolvePendingPermission(permissionRequestId, {
+      behavior: 'deny',
+      message: `AskUserQuestion is not supported on ${adapter.channelType} because the chat interface cannot render option buttons. Please ask your question as plain text instead.`,
+    });
+    return;
   }
 
-  const text = textLines.join('\n');
+  let message: OutboundMessage;
 
-  const message: OutboundMessage = {
-    address,
-    text,
-    parseMode: supportsButtons ? 'HTML' : 'plain',
-    inlineButtons: supportsButtons
-      ? [
-          [
-            { text: 'Allow', callbackData: `perm:allow:${permissionRequestId}` },
-            { text: 'Allow Session', callbackData: `perm:allow_session:${permissionRequestId}` },
-            { text: 'Deny', callbackData: `perm:deny:${permissionRequestId}` },
-          ],
-        ]
-      : undefined,
-    replyToMessageId,
-  };
+  // AskUserQuestion: render as question card with option buttons (#282)
+  const askCard = toolName === 'AskUserQuestion'
+    ? buildAskUserQuestionCard(permissionRequestId, toolInput)
+    : null;
 
-  const result = await deliver(adapter, message, { sessionId });
-
-  // Record the link so we can match callback queries back to this permission
-  if (result.ok && result.messageId) {
+  if (askCard) {
+    message = {
+      address,
+      text: askCard.text,
+      parseMode: 'HTML',
+      inlineButtons: askCard.inlineButtons,
+      replyToMessageId,
+    };
+    // Also store the original questions payload so the callback handler
+    // can echo them back as updatedInput when an option is chosen.
     try {
       insertPermissionLink({
         permissionRequestId,
         channelType: adapter.channelType,
         chatId: address.chatId,
-        messageId: result.messageId,
+        messageId: '', // will be updated after delivery
         toolName,
-        suggestions: suggestions ? JSON.stringify(suggestions) : '',
+        suggestions: JSON.stringify(toolInput), // reuse field — carries AUQ input
       });
     } catch { /* best effort */ }
+  } else {
+    // Default permission card (Allow / Allow Session / Deny)
+    const inputStr = JSON.stringify(toolInput, null, 2);
+    const truncatedInput = inputStr.length > 300
+      ? inputStr.slice(0, 300) + '...'
+      : inputStr;
+
+    const textLines = [
+      `<b>Permission Required</b>`,
+      ``,
+      `Tool: <code>${escapeHtml(toolName)}</code>`,
+      `<pre>${escapeHtml(truncatedInput)}</pre>`,
+      ``,
+    ];
+
+    if (supportsButtons) {
+      textLines.push(`Choose an action:`);
+    } else {
+      textLines.push(
+        `Reply with one of:`,
+        `/perm allow ${permissionRequestId}`,
+        `/perm allow_session ${permissionRequestId}`,
+        `/perm deny ${permissionRequestId}`,
+      );
+    }
+
+    message = {
+      address,
+      text: textLines.join('\n'),
+      parseMode: supportsButtons ? 'HTML' : 'plain',
+      inlineButtons: supportsButtons
+        ? [
+            [
+              { text: 'Allow', callbackData: `perm:allow:${permissionRequestId}` },
+              { text: 'Allow Session', callbackData: `perm:allow_session:${permissionRequestId}` },
+              { text: 'Deny', callbackData: `perm:deny:${permissionRequestId}` },
+            ],
+          ]
+        : undefined,
+      replyToMessageId,
+    };
   }
+
+  const result = await deliver(adapter, message, { sessionId });
+
+  // Record the link so we can match callback queries back to this permission.
+  // For AskUserQuestion we pre-inserted; here we update messageId if needed.
+  if (result.ok && result.messageId) {
+    try {
+      if (askCard) {
+        // Update the pre-inserted link with the actual message ID.
+        // (Simple re-insert; insertPermissionLink uses INSERT OR REPLACE semantics.)
+        insertPermissionLink({
+          permissionRequestId,
+          channelType: adapter.channelType,
+          chatId: address.chatId,
+          messageId: result.messageId,
+          toolName,
+          suggestions: JSON.stringify(toolInput),
+        });
+      } else {
+        insertPermissionLink({
+          permissionRequestId,
+          channelType: adapter.channelType,
+          chatId: address.chatId,
+          messageId: result.messageId,
+          toolName,
+          suggestions: suggestions ? JSON.stringify(suggestions) : '',
+        });
+      }
+    } catch { /* best effort */ }
+  }
+}
+
+/**
+ * Handle an AskUserQuestion callback (ask:{requestId}:{optionIndex}).
+ * Responds with updatedInput containing { questions, answers } matching the
+ * native AskUserQuestion tool's expected shape.
+ *
+ * Returns true if the callback was recognized and handled.
+ */
+export function handleAskUserQuestionCallback(
+  callbackData: string,
+  callbackChatId: string,
+  callbackMessageId?: string,
+): boolean {
+  const parts = callbackData.split(':');
+  if (parts.length < 3 || parts[0] !== 'ask') return false;
+
+  // permId may contain colons — everything except prefix and last index.
+  const optionIndex = parseInt(parts[parts.length - 1], 10);
+  if (!Number.isFinite(optionIndex) || optionIndex < 0) return false;
+  const permissionRequestId = parts.slice(1, -1).join(':');
+
+  const link = getPermissionLink(permissionRequestId);
+  if (!link) return false;
+  if (link.chatId !== callbackChatId) return false;
+  if (callbackMessageId && link.messageId !== callbackMessageId) return false;
+  if (link.resolved) return false;
+
+  let claimed: boolean;
+  try {
+    claimed = markPermissionLinkResolved(permissionRequestId);
+  } catch {
+    return false;
+  }
+  if (!claimed) return false;
+
+  // Parse the stored questions to find the chosen option label.
+  let questions: AskUserQuestion[] | undefined;
+  try {
+    const stored = JSON.parse(link.suggestions || '{}') as AskUserQuestionInput;
+    questions = stored.questions;
+  } catch { /* empty */ }
+  if (!questions || questions.length === 0) return false;
+
+  const firstQuestion = questions[0];
+  const option = firstQuestion.options[optionIndex];
+  if (!option) return false;
+
+  // Build answers keyed by question text (matches PermissionPrompt.tsx format).
+  const answers: Record<string, string> = { [firstQuestion.question]: option.label };
+
+  return resolvePendingPermission(permissionRequestId, {
+    behavior: 'allow',
+    updatedInput: { questions, answers } as Record<string, unknown>,
+  });
 }
 
 /**

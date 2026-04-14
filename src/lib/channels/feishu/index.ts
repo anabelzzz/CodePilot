@@ -29,10 +29,12 @@ interface CardActionEvent {
 }
 import { loadFeishuConfig, validateFeishuConfig } from './config';
 import { FeishuGateway } from './gateway';
-import { parseInboundMessage } from './inbound';
+import { parseMessageWithResources } from './inbound';
+import { getBotInfo } from './identity';
 import { sendMessage, addReaction, removeReaction } from './outbound';
 import { isUserAuthorized } from './policy';
 import { createCardStreamController } from './card-controller';
+import { downloadResource } from './resource-downloader';
 
 export class FeishuChannelPlugin implements ChannelPlugin<FeishuConfig> {
   readonly meta: ChannelMeta = {
@@ -48,6 +50,8 @@ export class FeishuChannelPlugin implements ChannelPlugin<FeishuConfig> {
   private lastMessageIdByChat = new Map<string, string>();
   /** Track active reaction IDs per chatId so we can remove them on completion. */
   private activeReactions = new Map<string, { messageId: string; reactionId: string }>();
+  /** Bot's open_id, resolved after gateway starts. Used for @mention detection (#384). */
+  private botOpenId = '';
 
   loadConfig(): FeishuConfig | null {
     this.config = loadFeishuConfig();
@@ -83,11 +87,27 @@ export class FeishuChannelPlugin implements ChannelPlugin<FeishuConfig> {
 
     this.gateway = new FeishuGateway(this.config);
 
-    // Register message handler — pushes to internal queue
+    // Register message handler — pushes to internal queue.
+    // Reads this.botOpenId at call time so mention checks activate
+    // once resolveBotIdentity() completes after gateway.start().
+    //
+    // For messages with attached resources (image/file/audio/video, #291), we
+    // download in the background and enqueue after attachments are ready. Text
+    // messages bypass the download step entirely.
     this.gateway.registerMessageHandler((data: unknown) => {
-      const msg = parseInboundMessage(data, this.config!);
-      if (!msg) return;
-      this.enqueueMessage(msg);
+      const parsed = parseMessageWithResources(data, this.config!, this.botOpenId);
+      if (!parsed) return;
+      if (parsed.resources.length === 0) {
+        this.enqueueMessage(parsed.message);
+        return;
+      }
+      // Download resources then enqueue. Fire-and-forget — the gateway handler
+      // must not block long-running downloads.
+      this.downloadAndEnqueue(parsed.message, parsed.resources).catch((err) => {
+        console.warn('[feishu/plugin]', 'Resource download failed:', err);
+        // Still enqueue with whatever text we have so the conversation continues
+        this.enqueueMessage(parsed.message);
+      });
     });
 
     // Register card action handler — converts button clicks to callback messages.
@@ -167,6 +187,41 @@ export class FeishuChannelPlugin implements ChannelPlugin<FeishuConfig> {
     });
 
     await this.gateway.start();
+
+    // Resolve bot identity so mention filtering works (#384).
+    // Fire-and-forget with retries — if it fails, mention detection simply no-ops
+    // but the bot still functions normally for DMs and un-gated groups.
+    this.resolveBotIdentity().catch((err) => {
+      console.warn('[feishu/plugin]', 'Bot identity resolution failed:', err);
+    });
+  }
+
+  /**
+   * Fetch bot open_id with retry so mention features degrade gracefully.
+   *
+   * Note: until this resolves successfully, the requireMention gate fails open
+   * (see inbound.ts) — un-mentioned group messages are NOT dropped during the
+   * startup gap. This avoids making the bot look completely broken on startup
+   * at the cost of a brief permissive window (~1-5s typically).
+   */
+  private async resolveBotIdentity(maxRetries = 3): Promise<void> {
+    const client = this.gateway?.getRestClient();
+    if (!client) return;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const info = await getBotInfo(client);
+      if (info?.openId) {
+        this.botOpenId = info.openId;
+        if (this.config?.requireMention) {
+          console.log('[feishu/plugin]', `Bot identity resolved (attempt ${attempt}); requireMention gate now active`);
+        }
+        return;
+      }
+      if (attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, 2000 * attempt));
+      }
+    }
+    const warning = 'Could not resolve bot identity — mention detection disabled (requireMention will fail open until resolved)';
+    console.warn('[feishu/plugin]', warning);
   }
 
   async stop(): Promise<void> {
@@ -174,6 +229,7 @@ export class FeishuChannelPlugin implements ChannelPlugin<FeishuConfig> {
       await this.gateway.stop();
       this.gateway = null;
     }
+    this.botOpenId = '';
     // Unblock any waiting consumer
     if (this.waitResolve) {
       this.waitResolve(null);
@@ -183,6 +239,33 @@ export class FeishuChannelPlugin implements ChannelPlugin<FeishuConfig> {
 
   isRunning(): boolean {
     return this.gateway?.isRunning() ?? false;
+  }
+
+  /**
+   * Download resources then enqueue the message with populated attachments (#291).
+   * Called from the message handler when non-text messages arrive. Partial
+   * failures (some downloads fail) still enqueue — the LLM can see what succeeded.
+   */
+  private async downloadAndEnqueue(
+    base: InboundMessage,
+    resources: import('./inbound').PendingResource[],
+  ): Promise<void> {
+    const client = this.gateway?.getRestClient();
+    if (!client) {
+      this.enqueueMessage(base);
+      return;
+    }
+
+    const attachments: import('@/types').FileAttachment[] = [];
+    for (const r of resources) {
+      const att = await downloadResource(client, r.messageId, r.fileKey, r.resourceType);
+      if (att) attachments.push(att);
+    }
+
+    this.enqueueMessage({
+      ...base,
+      attachments: attachments.length > 0 ? attachments : undefined,
+    });
   }
 
   private enqueueMessage(msg: InboundMessage): void {

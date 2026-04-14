@@ -17,6 +17,33 @@ function errMsg(err: unknown): string {
   return String(err);
 }
 
+/** Known permanent errors from Feishu that should NOT be retried (4xx user input problems). */
+const NON_RETRYABLE_ERROR_CODES = new Set([
+  99991663, // invalid access_token
+  99991664, // invalid app_id
+  10003, // invalid receive_id
+  230001, // permission denied (missing scope)
+  230002, // not in chat
+]);
+
+/** Max retries for outbound sends. */
+const SEND_MAX_RETRIES = 2;
+/** Base delay between retries (ms). */
+const SEND_RETRY_DELAY_MS = 1000;
+
+/** True if the error looks transient (network / rate limit / 5xx). */
+function isTransientError(err: unknown): boolean {
+  const code = (err as { code?: number })?.code;
+  if (typeof code === 'number') {
+    // Non-retryable 4xx — fail fast
+    if (NON_RETRYABLE_ERROR_CODES.has(code)) return false;
+    // Feishu rate limit 99991400 + 1429 etc. are retryable
+    return true;
+  }
+  const msg = errMsg(err).toLowerCase();
+  return msg.includes('timeout') || msg.includes('network') || msg.includes('econnreset') || msg.includes('enotfound');
+}
+
 /** Lark IM message response shape (shared by create/reply) */
 interface LarkMessageResponse {
   code?: number;
@@ -105,7 +132,7 @@ function htmlToFeishuMarkdown(text: string): string {
 // ─── Message sending ─────────────────────────────────────────────────────────
 
 /**
- * Send a message to Feishu.
+ * Send a message to Feishu with automatic retry on transient errors (#266).
  *
  * - With inlineButtons → interactive card (Schema V2)
  * - Without → post format with md tag (supports markdown rendering)
@@ -114,21 +141,38 @@ export async function sendMessage(
   client: lark.Client,
   message: OutboundMessage,
 ): Promise<SendResult> {
-  try {
-    const chatId = message.address.chatId.split(':thread:')[0];
-    const replyId = message.replyToMessageId;
+  const chatId = message.address.chatId.split(':thread:')[0];
+  const replyId = message.replyToMessageId;
+  const hasButtons = message.inlineButtons && message.inlineButtons.length > 0;
 
-    // Interactive card for messages with buttons
-    if (message.inlineButtons && message.inlineButtons.length > 0) {
-      return sendAsInteractiveCard(client, chatId, message.text, message.inlineButtons, replyId);
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= SEND_MAX_RETRIES; attempt++) {
+    try {
+      if (attempt > 0) {
+        const delay = SEND_RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+        await new Promise((r) => setTimeout(r, delay));
+        console.log(LOG_TAG, `Send retry ${attempt}/${SEND_MAX_RETRIES} after ${delay}ms`);
+      }
+
+      const result = hasButtons
+        ? await sendAsInteractiveCard(client, chatId, message.text, message.inlineButtons!, replyId)
+        : await sendAsPost(client, chatId, message.text, message.parseMode, replyId);
+
+      if (result.ok) return result;
+
+      // Sender returned a structured failure — decide whether to retry based on error text
+      lastErr = new Error(result.error || 'Send failed');
+      if (!isTransientError(lastErr)) return result;
+    } catch (err: unknown) {
+      lastErr = err;
+      if (!isTransientError(err)) {
+        console.error(LOG_TAG, 'Send failed (non-retryable):', errMsg(err));
+        return { ok: false, error: errMsg(err) };
+      }
     }
-
-    // Post format with md tag for markdown support
-    return sendAsPost(client, chatId, message.text, message.parseMode, replyId);
-  } catch (err: unknown) {
-    console.error(LOG_TAG, 'Send failed:', errMsg(err));
-    return { ok: false, error: errMsg(err) };
   }
+  console.error(LOG_TAG, `Send failed after ${SEND_MAX_RETRIES + 1} attempts:`, errMsg(lastErr));
+  return { ok: false, error: errMsg(lastErr) };
 }
 
 /**
@@ -192,6 +236,7 @@ async function sendAsInteractiveCard(
     const firstCallback = inlineButtons[0]?.[0]?.callbackData || '';
     const isPermission = firstCallback.startsWith('perm:');
     const isCwd = firstCallback.startsWith('cwd:');
+    const isAsk = firstCallback.startsWith('ask:');
 
     // Build button elements
     const allButtons = inlineButtons.flat();
@@ -227,7 +272,9 @@ async function sendAsInteractiveCard(
       ? { title: 'Permission Required', template: 'blue' as const, icon: 'lock-chat_filled' }
       : isCwd
         ? { title: 'Switch Project', template: 'turquoise' as const, icon: 'folder_outlined' }
-        : { title: 'Action Required', template: 'blue' as const, icon: 'info-circle_outlined' };
+        : isAsk
+          ? { title: 'Question', template: 'indigo' as const, icon: 'comment_outlined' }
+          : { title: 'Action Required', template: 'blue' as const, icon: 'info-circle_outlined' };
 
     // Build body elements
     const bodyElements: Record<string, unknown>[] = [
