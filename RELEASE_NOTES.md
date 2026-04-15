@@ -1,43 +1,35 @@
-## CodePilot v0.50.1
+## CodePilot v0.50.2
 
-> 飞书一键创建机器人 + SubAgent UI 可视化 + 消息队列模式 + 桥接稳定性大修 — 推荐所有飞书桥接用户升级。v0.50.0 因 CI lint 规则未通过构建未发布，v0.50.1 修复后重新发版。
-
-### 新增功能
-
-- **飞书一键创建机器人**：设置 → 飞书设置 → "创建并绑定飞书应用"，浏览器自动打开飞书授权页面，确认后 Bot 能力、权限、事件订阅和长连接模式全部自动配置，无需再手动进飞书开放平台后台
-- **SubAgent 执行过程可视化**：Agent 调用子代理（explore / general）时，工具面板会显示闪电图标和子代理的嵌套工具调用进度（带 spinner / 完成 / 失败状态指示）
-- **输入框草稿持久化**：在一个聊天中打了字还没发送，切换到别的聊天再切回来，输入内容仍然保留（按会话分别保存）
-- **消息队列模式**：AI 正在响应时继续输入并回车，消息会显示在输入框上方的队列卡片里，AI 回复完成后自动发送。支持取消队列中的消息，参考 Codex 设计
-- **飞书 AskUserQuestion 交互卡片**：Agent 在飞书桥接中使用 AskUserQuestion 时，现在会渲染为带选项按钮的交互卡片（之前直接被拒绝），点击选项即可继续对话
-- **飞书资源消息支持**：飞书桥接现在可以接收图片、文件、音频、视频消息，自动下载并附加到对话上下文（带重试和 20MB 大小限制）
+> 稳定性与凭据隔离专项修复版。重点修复 cc-switch 用户切换 provider 后被默默改路由、OpenAI OAuth 在部分网络环境下 403、Turbopack 生产路径报 "streamClaudeSdk is not a function"、内置 Memory/Widget 等 MCP 不该弹权限还弹的问题，以及 v0.49.0 后新增的长对话 AI_MissingToolResultsError 回归。强烈建议所有 cc-switch / 第三方 API / OpenAI OAuth 用户升级。
 
 ### 修复问题
 
-- **飞书群聊 @mention 过滤失效**（#384）：设置"需要 @提及"开关后，机器人真的会在群里只响应 @Bot 的消息
-- **飞书话题群串 session**（#321）：未开启"话题会话"时，不同话题消息不再被错误地路由到独立会话
-- **飞书桥接鉴权配置失效**：dmPolicy / groupPolicy / allowFrom / groupAllowFrom 配置现在真的会拦截未授权用户的消息和卡片点击（之前是配置存在但从未生效）
-- **飞书 WebSocket 幽灵连接**：停止桥接或重绑应用时，旧的长连接现在会被正确关闭，不再出现重复消息投递
-- **桥接停止不中断任务**：点击"停止桥接"后，正在运行的 Claude 会话会立刻被打断，不再继续写数据库
-- **历史回放二进制附件乱码**：音频、视频、二进制文件在历史对话重放时不再被当成 UTF-8 文本注入上下文
-- **消息投递可靠性**（#266）：飞书 outbound 消息加了指数退避重试，瞬时网络故障不再导致消息丢失
-- **SubAgent 启动后后续消息排队**：在 AI 执行子代理期间继续发消息不会阻塞，会进入队列等待当前轮次完成
+- **cc-switch 切换 provider 后请求被默默改路由**（#461/#478/#476/#457/#470/#474）：显式选择 Kimi/GLM/OpenRouter 等第三方 provider 时，`~/.claude/settings.json` 里 cc-switch 写入的 `ANTHROPIC_*` 环境变量不再覆盖你选的 provider 凭据；env group（无显式 provider）则继续完整尊重 cc-switch 配置。每个请求建临时 shadow HOME 做隔离，不影响任何原有文件
+- **OpenAI OAuth 登录 "Token exchange failed: 403 - [object Object]"**（#464）：macOS/Windows 用户在边缘节点 propagation 延迟时登录失败。现加 3 次指数退避重试（1s/2s/4s），对 403、408、429、5xx、网络级失败（ECONNRESET/ETIMEDOUT/ECONNREFUSED/ENOTFOUND）自动重试；错误消息不再出现 `[object Object]`
+- **升级后 localStorage 配置全丢（主题 / 默认模型 / 工作目录记忆）**（#465/#466/#477）：Electron 每次启动 renderer origin 变化导致 localStorage 整体作废。改用 47823-47830 稳定端口范围，并修复"探测后释放再绑定"的 TOCTOU race（两实例同时启动不再相互踢掉）
+- **v0.49.0+ 长对话卡死 "AI_MissingToolResultsError"**：v0.49.0 Hermes 升级把上下文窗口的近期轮次数从 16 降到 6，导致工具密集对话中 `tool_use` 块还在窗口内、配对的 `tool_result` 被截断，Vercel AI SDK 抛错卡死。恢复为 16 轮，截断标记改为 `[Pruned <toolName> result: ...]` 让模型仍能配对
+- **第三方 provider 发消息报 "streamClaudeSdk is not a function"**：Next.js 16 + Turbopack 的 CJS↔ESM interop 问题，影响 chat 主路径。把 5 处内部 lazy `require()` 改为静态 ES import 修复
+- **内置 Memory / Widget / Notify 等 MCP 被反复弹权限确认**：cc-switch 桥接工作上线后被误触发。7 个 CodePilot 内置 MCP 现通过 `allowedTools` 自动批准（用户自装的 MCP 仍按原权限模式走）
+- **Windows 报 "Claude Code executable not found"**：247 events/14d 的 Sentry 顶部错误。SDK cli.js 之前没被复制到 standalone bundle，现加入 `serverExternalPackages` 让 SDK 随 `extraResources` 完整保留
+- **切换会话后计时器归零**（#480/#484）：`ElapsedTimer` 之前 mount 时用 `Date.now()` 当起点，session 切换 remount 归零。改为从 stream-session-manager 透传起点时间，remount 后基于真实起点恢复
+- **选 slash 命令清空已输入文本**（#479/#486）：弹窗选命令时触发位前后的用户已输入内容会被清掉。现在保留文本，光标定位到末尾
+- **Skills 弹窗误触发 / 不能多选 / badge 占地方**：输入框里带单斜杠路径（`src/app`、`foo/bar`、`~/bin`）不再误触发弹窗；点击斜杠按钮时如前面是非空白字符会自动补空格，`hello` → `hello /` 正常弹出 Skills 选择器；支持同时选多个 Skills（按 command 去重），发送时合并为一条 prompt；badge 显示只保留命令名，去掉占地方的描述文字
+- **findClaudeBinary 首次启动误报**：WSL2 / 跨境 VPN 用户 timeout 3s 改 5s；两遍策略先找存在路径再做 `--version` 校验，校验超时但文件存在仍返回该路径
+- **OpenAI OAuth 误重试浪费时间**：token exchange 的真实 auth 错误（400/401/404/422）不再参与重试
 
 ### 优化改进
 
-- 队列中的消息以卡片形式悬浮在输入框上方（参考 Codex），可随时取消，不再混在聊天流里造成"两条用户消息一条没回复"的视觉错觉
-- Streaming 中输入时按钮图标智能切换：空输入 → 终止图标，有内容 → 发送图标（只对纯文本有效；slash 命令 / badge / Image Agent 保持终止图标避免误导）
-- 飞书快速创建支持已有应用场景：点击"已有飞书应用？点击手动配置"可展开原有的 App ID / App Secret 手动录入表单
-- 飞书多 question / multi-select 的 AskUserQuestion 会被明确拒绝并附带清晰原因，不再静默截断成半截答案
-- 飞书 bot identity 启动失败后会每 60s 后台重试，不再永久 fail-open（#384 的边界情况）
+- Sentry 服务端 `ignoreErrors` 补齐 `prompt() is not supported`（Electron 未实现）和 `ResizeObserver loop` 两条规则，与 client 端同步（368 events/14d 噪声清理）
+- 内置 MCP 启动失败错误提示更清晰
 
 ## 下载地址
 
 ### macOS
-- [Apple Silicon (M1/M2/M3/M4)](https://github.com/op7418/CodePilot/releases/download/v0.50.1/CodePilot-0.50.1-arm64.dmg)
-- [Intel](https://github.com/op7418/CodePilot/releases/download/v0.50.1/CodePilot-0.50.1-x64.dmg)
+- [Apple Silicon (M1/M2/M3/M4)](https://github.com/op7418/CodePilot/releases/download/v0.50.2/CodePilot-0.50.2-arm64.dmg)
+- [Intel](https://github.com/op7418/CodePilot/releases/download/v0.50.2/CodePilot-0.50.2-x64.dmg)
 
 ### Windows
-- [Windows 安装包](https://github.com/op7418/CodePilot/releases/download/v0.50.1/CodePilot.Setup.0.50.1.exe)
+- [Windows 安装包](https://github.com/op7418/CodePilot/releases/download/v0.50.2/CodePilot.Setup.0.50.2.exe)
 
 ## 安装说明
 
@@ -48,4 +40,4 @@
 
 - macOS 12.0+ / Windows 10+ / Linux (glibc 2.31+)
 - 需要配置 API 服务商（Anthropic / OpenRouter / OpenAI 等）
-- 可选安装 Claude Code CLI 以获得完整命令行能力
+- 推荐安装 Claude Code CLI 以获得完整功能
