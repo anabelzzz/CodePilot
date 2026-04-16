@@ -195,6 +195,27 @@
 - **状态:** 🔴 未修复
 - **描述:** 导入 Claude Code 会话需要一个个手动选择，无批量选择
 
+#### B-019 SDK runtime + 慢 provider 首包静默撞 330s Stream idle timeout
+- **Issue:** [#499](https://github.com/op7418/CodePilot/issues/499)
+- **状态:** 🔴 未修复（长期存在的架构盲点，v0.50.3 runtime auto 简化后暴露面扩大）
+- **现象:** Aliyun Bailian + `qwen3.6-plus`（及其他慢首包 provider）发消息后 330 秒固定报 `Stream idle timeout — no response for 330s`
+- **代码位置:**
+  - `src/lib/stream-session-manager.ts:88` 硬编码 `STREAM_IDLE_TIMEOUT_MS = 330_000`
+  - `src/lib/stream-session-manager.ts:242-248` 每 10s `setInterval` 检查 `Date.now() - lastEventTime >= 330s` → abort
+  - `markActive()` 覆盖 22+ 个 SSE 事件类型，包括 `onKeepAlive`（line 466-468）——**任何**事件都刷新 lastEventTime
+- **根因（架构层）:** **SDK runtime 路径缺 keepalive 兜底**
+  - Native runtime `src/lib/agent-loop.ts:76,119-121` 每 **15s** 主动发 `keep_alive` SSE，天然防止 330s 超时
+  - SDK runtime `src/lib/claude-client.ts:1451-1452` **只透传** Claude Code SDK 自己发的 `keep_alive`——SDK 与上游中间静默时，我们不补心跳，客户端就真的会 330s 后 abort
+  - v0.50.3 的 runtime auto 改成 binary check，**装了 CLI 的用户默认走 SDK runtime**——扩大了暴露面。Bailian Coding Plan 后端有排队机制，首包可能静默几分钟，正好撞上
+- **为什么 v0.50.3 才集中爆出:** `STREAM_IDLE_TIMEOUT_MS = 330_000` 常量早就存在，不是本版引入的；但 qwen3.6-plus 是 v0.50.3 新加模型（commit `2d06f50`）+ 百炼首包排队慢 + SDK runtime 成为装了 CLI 用户的默认 = 三者叠加
+- **修复方向（二选一或都做）:**
+  1. **快修**：把 `STREAM_IDLE_TIMEOUT_MS` 提到 600s 或做成 provider 级可配置（UI 或 `options_json` 字段）
+  2. **根治**：在 SDK runtime 的 SSE pipe 侧也加 15s keepalive 定时器，对齐 Native runtime 的兜底节奏
+- **推荐:** 先做根治（#2），成本不大、一劳永逸；#1 作为 provider-level override 留给有异常慢后端的场景（少数）
+- **下一步:** 下个 hotfix 窗口处理
+
+---
+
 #### B-018 macOS 启动 / 新对话时弹 "找不到用于储存 'apple' 的钥匙串" 对话框
 - **Issue:** [#501](https://github.com/op7418/CodePilot/issues/501)
 - **状态:** 🟡 非代码缺陷 + 有规避方案未落地（2026-04-16 诊断）
