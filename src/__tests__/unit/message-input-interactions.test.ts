@@ -26,6 +26,8 @@ import {
   resolveKeyAction,
   resolveDirectSlash,
   buildCliAppend,
+  parseMentionRefs,
+  dedupeMentionsByPath,
 } from '../../lib/message-input-logic';
 
 // =====================================================================
@@ -675,6 +677,47 @@ describe('CLI badge behavior', () => {
       isSubmitEnabled({ inputValue: '', hasBadge: true, hasFiles: false, isStreaming: false, disabled: false }),
       true,
     );
+  });
+});
+
+describe('@mention parsing and dedupe', () => {
+  it('parses file mention with source range', () => {
+    const refs = parseMentionRefs('Please check @src/app/page.tsx now');
+    assert.equal(refs.length, 1);
+    assert.equal(refs[0].path, 'src/app/page.tsx');
+    assert.equal(refs[0].nodeType, 'file');
+    assert.ok(refs[0].sourceRange.start >= 0);
+    assert.ok(refs[0].sourceRange.end > refs[0].sourceRange.start);
+  });
+
+  it('parses multiple mentions and keeps order', () => {
+    const refs = parseMentionRefs('Compare @a.ts and @b.ts');
+    assert.equal(refs.length, 2);
+    assert.equal(refs[0].path, 'a.ts');
+    assert.equal(refs[1].path, 'b.ts');
+  });
+
+  it('respects node type lookup for directory mentions', () => {
+    const refs = parseMentionRefs(
+      'Open @src/components',
+      { 'src/components': 'directory' },
+    );
+    assert.equal(refs.length, 1);
+    assert.equal(refs[0].nodeType, 'directory');
+  });
+
+  it('strips trailing punctuation from mention path', () => {
+    const refs = parseMentionRefs('See @src/index.ts, please.');
+    assert.equal(refs.length, 1);
+    assert.equal(refs[0].path, 'src/index.ts');
+  });
+
+  it('dedupes mentions by path', () => {
+    const refs = parseMentionRefs('@src/a.ts @src/a.ts @src/b.ts');
+    const deduped = dedupeMentionsByPath(refs);
+    assert.equal(deduped.length, 2);
+    assert.equal(deduped[0].path, 'src/a.ts');
+    assert.equal(deduped[1].path, 'src/b.ts');
   });
 });
 

@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import type { Message, SSEEvent, SessionResponse, TokenUsage, PermissionRequestEvent } from '@/types';
+import type { Message, SSEEvent, SessionResponse, TokenUsage, PermissionRequestEvent, FileAttachment, MentionRef } from '@/types';
 import { MessageList } from '@/components/chat/MessageList';
 import { MessageInput } from '@/components/chat/MessageInput';
 import { ChatComposerActionBar } from '@/components/chat/ChatComposerActionBar';
@@ -427,7 +427,7 @@ export default function NewChatPage() {
   }, [pendingPermission, setPendingApprovalSessionId]);
 
   const sendFirstMessage = useCallback(
-    async (content: string, _files?: unknown, systemPromptAppend?: string, displayOverride?: string) => {
+    async (content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string, mentions?: MentionRef[]) => {
       if (isStreaming) return;
 
       // Wait for model/provider to be resolved from the global default before allowing send
@@ -489,11 +489,15 @@ export default function NewChatPage() {
         window.dispatchEvent(new CustomEvent('session-created'));
 
         // Add user message to UI — use displayOverride for chat bubble if provided
+        const displayUserContent = displayOverride || content;
+        const contentWithFileMeta = files && files.length > 0
+          ? `<!--files:${JSON.stringify(files.map(f => ({ id: f.id, name: f.name, type: f.type, size: f.size })))}-->${displayUserContent}`
+          : displayUserContent;
         const userMessage: Message = {
           id: 'temp-' + Date.now(),
           session_id: session.id,
           role: 'user',
-          content: displayOverride || content,
+          content: contentWithFileMeta,
           created_at: new Date().toISOString(),
           token_usage: null,
         };
@@ -514,6 +518,8 @@ export default function NewChatPage() {
             mode,
             model: currentModel,
             provider_id: currentProviderId,
+            ...(files && files.length > 0 ? { files } : {}),
+            ...(mentions && mentions.length > 0 ? { mentions } : {}),
             ...(systemPromptAppend ? { systemPromptAppend } : {}),
             ...(selectedEffort ? { effort: selectedEffort } : {}),
             ...(thinkingConfig ? { thinking: thinkingConfig } : {}),

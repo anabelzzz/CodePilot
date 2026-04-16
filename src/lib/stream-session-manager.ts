@@ -21,6 +21,7 @@ import type {
   TokenUsage,
   PermissionRequestEvent,
   FileAttachment,
+  MentionRef,
 } from '@/types';
 
 // ==========================================
@@ -59,6 +60,7 @@ export interface StartStreamParams {
   model: string;
   providerId: string;
   files?: FileAttachment[];
+  mentions?: MentionRef[];
   systemPromptAppend?: string;
   pendingImageNotices?: string[];
   /** When true, backend skips saving user message and title update (assistant auto-trigger) */
@@ -294,6 +296,7 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
         model: params.model,
         provider_id: params.providerId,
         ...(params.files && params.files.length > 0 ? { files: params.files } : {}),
+        ...(params.mentions && params.mentions.length > 0 ? { mentions: params.mentions } : {}),
         ...(params.systemPromptAppend ? { systemPromptAppend: params.systemPromptAppend } : {}),
         ...(params.autoTrigger ? { autoTrigger: true } : {}),
         ...(params.effort ? { effort: params.effort } : {}),

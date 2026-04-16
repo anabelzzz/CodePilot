@@ -33,6 +33,7 @@ export function useSlashCommands(opts: {
   closePopover: () => void;
   onCommand?: (command: string) => void;
   addBadge: (badge: { command: string; label: string; description: string; kind: SkillKind; installedSource?: "agents" | "claude" }) => void;
+  onMentionInserted?: (mention: { path: string; nodeType: 'file' | 'directory'; display: string }) => void;
   /** When true, block immediate commands and badge selection from popover */
   isStreaming?: boolean;
 }): UseSlashCommandsReturn {
@@ -54,6 +55,7 @@ export function useSlashCommands(opts: {
     closePopover,
     onCommand,
     addBadge,
+    onMentionInserted,
     isStreaming,
   } = opts;
 
@@ -67,25 +69,24 @@ export function useSlashCommands(opts: {
   const fetchFiles = useCallback(async (filter: string) => {
     try {
       const params = new URLSearchParams();
-      if (sessionId) params.set('session_id', sessionId);
+      if (sessionId) params.set('sessionId', sessionId);
+      if (!sessionId && workingDirectory) params.set('workingDirectory', workingDirectory);
       if (filter) params.set('q', filter);
-      const res = await fetch(`/api/files?${params.toString()}`);
+      params.set('limit', '50');
+      const res = await fetch(`/api/files/suggest?${params.toString()}`);
       if (!res.ok) return [];
       const data = await res.json();
-      const tree = data.tree || [];
-      const items: PopoverItem[] = [];
-      function flattenTree(nodes: Array<{ name: string; path: string; type: string; children?: unknown[] }>) {
-        for (const node of nodes) {
-          items.push({ label: node.name, value: node.path });
-          if (node.children) flattenTree(node.children as typeof nodes);
-        }
-      }
-      flattenTree(tree);
-      return items.slice(0, 20);
+      const items = (data.items || []) as Array<{ path: string; display?: string; type?: 'file' | 'directory'; nodeType?: 'file' | 'directory' }>;
+      return items.map((item) => ({
+        label: item.display || item.path,
+        value: item.path,
+        display: item.display || item.path,
+        nodeType: item.type || item.nodeType || 'file',
+      }));
     } catch {
       return [];
     }
-  }, [sessionId]);
+  }, [sessionId, workingDirectory]);
 
   // Fetch skills for / command (built-in + API)
   const fetchSkills = useCallback(async () => {
@@ -209,11 +210,16 @@ export function useSlashCommands(opts: {
 
       case 'insert_file_mention':
         setInputValue(result.newInputValue!);
+        onMentionInserted?.({
+          path: item.value,
+          nodeType: item.nodeType || 'file',
+          display: item.display || item.value,
+        });
         closePopover();
         setTimeout(() => textareaRef.current?.focus(), 0);
         return;
     }
-  }, [triggerPos, popoverMode, closePopover, onCommand, inputValue, popoverFilter, textareaRef, setInputValue, addBadge, isStreaming]);
+  }, [triggerPos, popoverMode, closePopover, onCommand, inputValue, popoverFilter, textareaRef, setInputValue, addBadge, onMentionInserted, isStreaming]);
 
   // Handle input changes to detect @ and /
   const handleInputChange = useCallback(async (val: string) => {

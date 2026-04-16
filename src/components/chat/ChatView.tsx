@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import type { Message, MessagesResponse, FileAttachment, SessionStreamSnapshot } from '@/types';
+import type { Message, MessagesResponse, FileAttachment, SessionStreamSnapshot, MentionRef } from '@/types';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { ChatComposerActionBar } from './ChatComposerActionBar';
@@ -34,6 +34,7 @@ interface QueuedMessage {
   files?: FileAttachment[];
   systemPromptAppend?: string;
   displayOverride?: string;
+  mentions?: MentionRef[];
 }
 
 interface ChatViewProps {
@@ -198,7 +199,7 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
 
   // Pending image generation notices
   const pendingImageNoticesRef = useRef<string[]>([]);
-  const sendMessageRef = useRef<(content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string) => Promise<void>>(undefined);
+  const sendMessageRef = useRef<(content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string, mentions?: MentionRef[]) => Promise<void>>(undefined);
   const initMetaRef = useRef<{ tools?: unknown; slash_commands?: unknown; skills?: unknown } | null>(null);
 
   const handleModeChange = useCallback((newMode: string) => {
@@ -428,7 +429,7 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
 
   /** Start an API stream for the given content. Does NOT add a user message to the list. */
   const doStartStream = useCallback(
-    (content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string) => {
+    (content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string, mentions?: MentionRef[]) => {
       const notices = pendingImageNoticesRef.current.length > 0
         ? [...pendingImageNoticesRef.current]
         : undefined;
@@ -447,6 +448,7 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
         thinking: buildThinkingConfig(),
         context1m,
         displayOverride,
+        mentions,
         onModeChanged: (sdkMode) => {
           const uiMode = sdkMode === 'plan' ? 'plan' : 'code';
           handleModeChange(uiMode);
@@ -464,7 +466,7 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
   );
 
   const sendMessage = useCallback(
-    async (content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string) => {
+    async (content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string, mentions?: MentionRef[]) => {
       const displayUserContent = displayOverride || content;
       let displayContent = displayUserContent;
       if (files && files.length > 0) {
@@ -474,7 +476,7 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
 
       // Queue message if currently streaming — hold above input, send after completion
       if (isStreaming) {
-        setMessageQueue((prev) => [...prev, { content, files, systemPromptAppend, displayOverride }]);
+        setMessageQueue((prev) => [...prev, { content, files, systemPromptAppend, displayOverride, mentions }]);
         return;
       }
 
@@ -487,7 +489,7 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
         token_usage: null,
       };
       cappedSetMessages((prev) => [...prev, userMessage]);
-      doStartStream(content, files, systemPromptAppend, displayOverride);
+      doStartStream(content, files, systemPromptAppend, displayOverride, mentions);
     },
     [sessionId, isStreaming, doStartStream, cappedSetMessages]
   );
@@ -516,7 +518,7 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
         token_usage: null,
       };
       cappedSetMessages((prev) => [...prev, userMessage]);
-      doStartStream(next.content, next.files, next.systemPromptAppend, next.displayOverride);
+      doStartStream(next.content, next.files, next.systemPromptAppend, next.displayOverride, next.mentions);
     }
     if (isStreaming) {
       dequeuingRef.current = false;

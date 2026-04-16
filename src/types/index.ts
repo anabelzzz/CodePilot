@@ -73,10 +73,13 @@ export type IconComponent = ComponentType<
   SVGAttributes<SVGSVGElement> & RefAttributes<SVGSVGElement> & { size?: number | string; className?: string }
 >;
 
+export type MentionNodeType = 'file' | 'directory';
+
 /** Shared model for popover items (slash commands, file mentions, skills). */
 export interface PopoverItem {
   label: string;
   value: string;
+  display?: string;
   description?: string;
   descriptionKey?: TranslationKey;
   builtIn?: boolean;
@@ -85,6 +88,7 @@ export interface PopoverItem {
   source?: 'global' | 'project' | 'plugin' | 'installed' | 'sdk';
   kind?: SkillKind;
   icon?: IconComponent;
+  nodeType?: MentionNodeType;
 }
 
 /** Which popover is currently active in the command input. */
@@ -314,6 +318,7 @@ export interface SendMessageRequest {
   model?: string;
   mode?: string;
   provider_id?: string;
+  mentions?: MentionRef[];
 }
 
 export interface UpdateMCPConfigRequest {
@@ -756,6 +761,16 @@ export interface ReferenceImage {
   mimeType: string;
   data?: string;       // base64 (user upload)
   localPath?: string;  // file path (generated result)
+}
+
+export interface MentionRef {
+  path: string;
+  nodeType: MentionNodeType;
+  display: string;
+  sourceRange: {
+    start: number;
+    end: number;
+  };
 }
 
 // ==========================================

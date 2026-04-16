@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, useCallback, useEffect, type KeyboardEvent, type FormEvent } from 'react';
+import { useRef, useState, useCallback, useEffect, useMemo, type KeyboardEvent, type FormEvent } from 'react';
 import { Terminal } from "@/components/ui/icon";
 import { useTranslation } from '@/hooks/useTranslation';
 import type { TranslationKey } from '@/i18n';
@@ -12,13 +12,13 @@ import {
   PromptInputButton,
 } from '@/components/ai-elements/prompt-input';
 import type { ChatStatus } from 'ai';
-import type { FileAttachment } from '@/types';
+import type { FileAttachment, MentionRef } from '@/types';
 import { SlashCommandButton } from './SlashCommandButton';
 import { SlashCommandPopover } from './SlashCommandPopover';
 import { CliToolsPopover } from './CliToolsPopover';
 import { ModelSelectorDropdown } from './ModelSelectorDropdown';
 import { EffortSelectorDropdown } from './EffortSelectorDropdown';
-import { FileAwareSubmitButton, AttachFileButton, FileTreeAttachmentBridge, FileAttachmentsCapsules, CommandBadgeList, CliBadge } from './MessageInputParts';
+import { FileAwareSubmitButton, AttachFileButton, FileTreeAttachmentBridge, FileAttachmentsCapsules, CliBadge, ComposerBadgeRow } from './MessageInputParts';
 import {
   Tooltip,
   TooltipContent,
@@ -33,11 +33,16 @@ import { useProviderModels } from '@/hooks/useProviderModels';
 import { useCommandBadge } from '@/hooks/useCommandBadge';
 import { useCliToolsFetch } from '@/hooks/useCliToolsFetch';
 import { useSlashCommands } from '@/hooks/useSlashCommands';
-import { resolveKeyAction, cycleIndex, resolveDirectSlash, dispatchBadge, buildCliAppend } from '@/lib/message-input-logic';
+import { resolveKeyAction, cycleIndex, resolveDirectSlash, dispatchBadge, buildCliAppend, parseMentionRefs, dedupeMentionsByPath } from '@/lib/message-input-logic';
 import { QuickActions } from './QuickActions';
 
+const MAX_MENTION_FILE_BYTES = 256 * 1024; // 256KB per @file mention
+const MAX_MENTION_FILE_COUNT = 6;
+const MAX_DIRECTORY_MENTION_COUNT = 3;
+const MAX_DIRECTORY_PREVIEW_ITEMS = 30;
+
 interface MessageInputProps {
-  onSend: (content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string) => void;
+  onSend: (content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string, mentions?: MentionRef[]) => void;
   onCommand?: (command: string) => void;
   onStop?: () => void;
   disabled?: boolean;
@@ -60,6 +65,39 @@ interface MessageInputProps {
   isAssistantProject?: boolean;
   /** Whether the session already has messages */
   hasMessages?: boolean;
+}
+
+function joinPath(base: string, rel: string): string {
+  const b = base.replace(/[\\/]+$/, '');
+  const r = rel.replace(/^[\\/]+/, '');
+  return `${b}/${r}`;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+async function fileResponseToAttachment(
+  response: Response,
+  filename: string,
+  idPrefix: string,
+): Promise<FileAttachment> {
+  const mimeType = response.headers.get('content-type') || 'application/octet-stream';
+  const buffer = await response.arrayBuffer();
+  return {
+    id: `${idPrefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name: filename,
+    type: mimeType,
+    size: buffer.byteLength,
+    data: arrayBufferToBase64(buffer),
+  };
 }
 
 export function MessageInput({
@@ -93,6 +131,11 @@ export function MessageInput({
     if (initialValue) return initialValue;
     try { return sessionStorage.getItem(draftKey) || ''; } catch { return ''; }
   });
+  const [mentions, setMentions] = useState<MentionRef[]>([]);
+  const [mentionNodeTypes, setMentionNodeTypes] = useState<Record<string, 'file' | 'directory'>>({});
+  const [badgeOrder, setBadgeOrder] = useState<Record<string, number>>({});
+  const [mentionOrder, setMentionOrder] = useState<Record<string, number>>({});
+  const orderSeqRef = useRef(0);
   const setInputValue = useCallback((v: string | ((prev: string) => string)) => {
     setInputValueRaw((prev) => {
       const next = typeof v === 'function' ? v(prev) : v;
@@ -100,6 +143,31 @@ export function MessageInput({
       return next;
     });
   }, [draftKey]);
+
+  useEffect(() => {
+    const parsed = parseMentionRefs(inputValue, mentionNodeTypes);
+    // Render chips only for explicitly inserted/known mentions.
+    setMentions(parsed.filter((m) => !!mentionNodeTypes[m.path]));
+  }, [inputValue, mentionNodeTypes]);
+
+  const nextOrder = useCallback(() => {
+    orderSeqRef.current += 1;
+    return orderSeqRef.current;
+  }, []);
+
+  const ensureBadgeOrder = useCallback((command: string) => {
+    setBadgeOrder((prev) => {
+      if (prev[command]) return prev;
+      return { ...prev, [command]: nextOrder() };
+    });
+  }, [nextOrder]);
+
+  const ensureMentionOrder = useCallback((path: string) => {
+    setMentionOrder((prev) => {
+      if (prev[path]) return prev;
+      return { ...prev, [path]: nextOrder() };
+    });
+  }, [nextOrder]);
 
   // --- Extracted hooks ---
   const popover = usePopoverState(modelName);
@@ -121,6 +189,23 @@ export function MessageInput({
   }, [modelName, modelOptions, currentProviderIdValue, onModelChange, onProviderModelChange]);
 
   const { badges, addBadge, removeBadge, clearBadges, cliBadge, setCliBadge, removeCliBadge, hasBadge } = useCommandBadge(textareaRef);
+  const addBadgeWithOrder = useCallback((badge: { command: string; label: string; description: string; kind: 'agent_skill' | 'slash_command' | 'sdk_command' | 'codepilot_command'; installedSource?: 'agents' | 'claude' }) => {
+    ensureBadgeOrder(badge.command);
+    addBadge(badge);
+  }, [addBadge, ensureBadgeOrder]);
+  const removeBadgeWithOrder = useCallback((command: string) => {
+    removeBadge(command);
+    setBadgeOrder((prev) => {
+      if (!prev[command]) return prev;
+      const next = { ...prev };
+      delete next[command];
+      return next;
+    });
+  }, [removeBadge]);
+  const clearBadgesWithOrder = useCallback(() => {
+    clearBadges();
+    setBadgeOrder({});
+  }, [clearBadges]);
 
   const cliToolsFetch = useCliToolsFetch({
     popoverMode: popover.popoverMode,
@@ -152,7 +237,11 @@ export function MessageInput({
     setTriggerPos: popover.setTriggerPos,
     closePopover: popover.closePopover,
     onCommand,
-    addBadge,
+    addBadge: addBadgeWithOrder,
+    onMentionInserted: (mention) => {
+      setMentionNodeTypes((prev) => ({ ...prev, [mention.path]: mention.nodeType }));
+      ensureMentionOrder(mention.path);
+    },
     isStreaming: !!isStreaming,
   });
 
@@ -171,6 +260,8 @@ export function MessageInput({
       const filePath = (e as CustomEvent<{ path: string }>).detail?.path;
       if (!filePath) return;
       const mention = `@${filePath} `;
+      setMentionNodeTypes((prev) => ({ ...prev, [filePath]: 'file' }));
+      ensureMentionOrder(filePath);
       setInputValue((prev) => {
         const needsSpace = prev.length > 0 && !prev.endsWith(' ') && !prev.endsWith('\n');
         return prev + (needsSpace ? ' ' : '') + mention;
@@ -179,7 +270,74 @@ export function MessageInput({
     };
     window.addEventListener('insert-file-mention', handler);
     return () => window.removeEventListener('insert-file-mention', handler);
-  }, [setInputValue]);
+  }, [setInputValue, setMentionNodeTypes, ensureMentionOrder]);
+
+  const normalizeMentionPath = useCallback((rawPath: string): string => {
+    const normalizedRaw = rawPath.replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!workingDirectory) return normalizedRaw;
+    const normalizedBase = workingDirectory.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (normalizedRaw.startsWith(normalizedBase + '/')) {
+      return normalizedRaw.slice(normalizedBase.length + 1);
+    }
+    return normalizedRaw;
+  }, [workingDirectory]);
+
+  const fetchMentionFileAttachment = useCallback(async (mentionPath: string): Promise<{ attachment: FileAttachment | null; limitNote?: string }> => {
+    const safePath = normalizeMentionPath(mentionPath);
+    const filename = safePath.split('/').filter(Boolean).pop() || 'file';
+    try {
+      if (sessionId) {
+        const res = await fetch(`/api/files/serve?sessionId=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(safePath)}`);
+        if (!res.ok) return { attachment: null };
+        const headerSize = Number.parseInt(res.headers.get('content-length') || '', 10);
+        if (Number.isFinite(headerSize) && headerSize > MAX_MENTION_FILE_BYTES) {
+          return { attachment: null, limitNote: `@${safePath}: omitted (file too large > 256KB).` };
+        }
+        const attachment = await fileResponseToAttachment(res, filename, 'mention');
+        if (attachment.size > MAX_MENTION_FILE_BYTES) {
+          return { attachment: null, limitNote: `@${safePath}: omitted (file too large > 256KB).` };
+        }
+        return { attachment };
+      }
+
+      if (!workingDirectory) return { attachment: null };
+      const absolutePath = joinPath(workingDirectory, safePath);
+      const res = await fetch(`/api/files/raw?path=${encodeURIComponent(absolutePath)}`);
+      if (!res.ok) return { attachment: null };
+      const headerSize = Number.parseInt(res.headers.get('content-length') || '', 10);
+      if (Number.isFinite(headerSize) && headerSize > MAX_MENTION_FILE_BYTES) {
+        return { attachment: null, limitNote: `@${safePath}: omitted (file too large > 256KB).` };
+      }
+      const attachment = await fileResponseToAttachment(res, filename, 'mention');
+      if (attachment.size > MAX_MENTION_FILE_BYTES) {
+        return { attachment: null, limitNote: `@${safePath}: omitted (file too large > 256KB).` };
+      }
+      return { attachment };
+    } catch {
+      return { attachment: null };
+    }
+  }, [sessionId, workingDirectory, normalizeMentionPath]);
+
+  const fetchDirectorySummary = useCallback(async (mentionPath: string): Promise<string | null> => {
+    if (!workingDirectory) return null;
+    const safePath = normalizeMentionPath(mentionPath);
+    const dir = joinPath(workingDirectory, safePath);
+    try {
+      const res = await fetch(`/api/files?dir=${encodeURIComponent(dir)}&baseDir=${encodeURIComponent(workingDirectory)}&depth=2`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      const tree = Array.isArray(data.tree) ? data.tree : [];
+      const preview = tree.slice(0, MAX_DIRECTORY_PREVIEW_ITEMS).map((node: { name: string; type: 'file' | 'directory' }) => (
+        node.type === 'directory' ? `- ${node.name}/` : `- ${node.name}`
+      ));
+      const extra = tree.length > MAX_DIRECTORY_PREVIEW_ITEMS
+        ? `\n- ... (${tree.length - MAX_DIRECTORY_PREVIEW_ITEMS} more)`
+        : '';
+      return `Directory reference @${safePath}/\n${preview.join('\n')}${extra}`;
+    } catch {
+      return null;
+    }
+  }, [workingDirectory, normalizeMentionPath]);
 
   const handleSubmit = useCallback(async (msg: { text: string; files: Array<{ type: string; url: string; filename?: string; mediaType?: string }> }, e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -208,13 +366,62 @@ export function MessageInput({
       return attachments;
     };
 
+    const resolveMentionPayload = async () => {
+      const parsedMentions = parseMentionRefs(inputValue, mentionNodeTypes);
+      const dedupedMentions = dedupeMentionsByPath(parsedMentions);
+      if (dedupedMentions.length === 0) {
+        return {
+          mentions: [] as MentionRef[],
+          files: [] as FileAttachment[],
+          directoryNotes: [] as string[],
+          limitNotes: [] as string[],
+        };
+      }
+
+      const mentionFiles: FileAttachment[] = [];
+      const directoryNotes: string[] = [];
+      const limitNotes: string[] = [];
+      let usedDirectoryMentions = 0;
+      for (const mention of dedupedMentions) {
+        if (mention.nodeType === 'directory') {
+          if (usedDirectoryMentions >= MAX_DIRECTORY_MENTION_COUNT) {
+            limitNotes.push(`@${mention.path}/: omitted (max ${MAX_DIRECTORY_MENTION_COUNT} directories per message).`);
+            continue;
+          }
+          const summary = await fetchDirectorySummary(mention.path);
+          if (summary) directoryNotes.push(summary);
+          usedDirectoryMentions += 1;
+          continue;
+        }
+        if (mentionFiles.length >= MAX_MENTION_FILE_COUNT) {
+          limitNotes.push(`@${mention.path}: omitted (max ${MAX_MENTION_FILE_COUNT} files per message).`);
+          continue;
+        }
+        const { attachment, limitNote } = await fetchMentionFileAttachment(mention.path);
+        if (attachment) mentionFiles.push(attachment);
+        if (limitNote) limitNotes.push(limitNote);
+      }
+      return { mentions: dedupedMentions, files: mentionFiles, directoryNotes, limitNotes };
+    };
+
     // If Image Agent toggle is on and no badge, send via normal LLM with systemPromptAppend.
     // PENDING_KEY is a global singleton — queuing would misattach refs, so block entirely
     // during streaming rather than letting it fall through to the plain queue path.
     if (imageGen.state.enabled && badges.length === 0) {
       if (isStreaming) return; // silently block — can't safely queue image-agent prompts
-      const files = await convertFiles();
-      if (!content && files.length === 0) return;
+      const uploadedFiles = await convertFiles();
+      const mentionPayload = await resolveMentionPayload();
+      const files = [...uploadedFiles, ...mentionPayload.files];
+      const mentionSections: string[] = [];
+      if (mentionPayload.directoryNotes.length > 0) {
+        mentionSections.push(`[Referenced Directories]\n${mentionPayload.directoryNotes.join('\n\n')}`);
+      }
+      if (mentionPayload.limitNotes.length > 0) {
+        mentionSections.push(`[Mention Limits]\n${mentionPayload.limitNotes.map((x) => `- ${x}`).join('\n')}`);
+      }
+      const mentionAppend = mentionSections.length > 0 ? `\n\n${mentionSections.join('\n\n')}` : '';
+      const finalContent = `${content}${mentionAppend}`.trim();
+      if (!finalContent && files.length === 0) return;
 
       // Store uploaded images as pending reference images for ImageGenConfirmation
       const imageFiles = files.filter(f => f.type.startsWith('image/'));
@@ -226,7 +433,13 @@ export function MessageInput({
 
       setInputValue('');
       if (onSend) {
-        onSend(content, files.length > 0 ? files : undefined, IMAGE_AGENT_SYSTEM_PROMPT);
+        onSend(
+          finalContent,
+          files.length > 0 ? files : undefined,
+          IMAGE_AGENT_SYSTEM_PROMPT,
+          mentionPayload.mentions.length > 0 ? content : undefined,
+          mentionPayload.mentions.length > 0 ? mentionPayload.mentions : undefined,
+        );
       }
       return;
     }
@@ -235,22 +448,50 @@ export function MessageInput({
     // Block during streaming — badges carry slash/skill semantics, not safe to queue.
     if (badges.length > 0) {
       if (isStreaming) return;
-      const files = await convertFiles();
+      const uploadedFiles = await convertFiles();
+      const mentionPayload = await resolveMentionPayload();
+      const files = [...uploadedFiles, ...mentionPayload.files];
       const { prompt, displayLabel } = dispatchBadge(badges, content);
-      clearBadges();
+      const mentionSections: string[] = [];
+      if (mentionPayload.directoryNotes.length > 0) {
+        mentionSections.push(`[Referenced Directories]\n${mentionPayload.directoryNotes.join('\n\n')}`);
+      }
+      if (mentionPayload.limitNotes.length > 0) {
+        mentionSections.push(`[Mention Limits]\n${mentionPayload.limitNotes.map((x) => `- ${x}`).join('\n')}`);
+      }
+      const mentionAppend = mentionSections.length > 0 ? `\n\n${mentionSections.join('\n\n')}` : '';
+      const finalPrompt = `${prompt}${mentionAppend}`.trim();
+      clearBadgesWithOrder();
       setInputValue('');
-      onSend(prompt, files.length > 0 ? files : undefined, undefined, displayLabel);
+      onSend(
+        finalPrompt,
+        files.length > 0 ? files : undefined,
+        undefined,
+        displayLabel,
+        mentionPayload.mentions.length > 0 ? mentionPayload.mentions : undefined,
+      );
       return;
     }
 
-    const files = await convertFiles();
+    const uploadedFiles = await convertFiles();
+    const mentionPayload = await resolveMentionPayload();
+    const files = [...uploadedFiles, ...mentionPayload.files];
+    const mentionSections: string[] = [];
+    if (mentionPayload.directoryNotes.length > 0) {
+      mentionSections.push(`[Referenced Directories]\n${mentionPayload.directoryNotes.join('\n\n')}`);
+    }
+    if (mentionPayload.limitNotes.length > 0) {
+      mentionSections.push(`[Mention Limits]\n${mentionPayload.limitNotes.map((x) => `- ${x}`).join('\n')}`);
+    }
+    const mentionAppend = mentionSections.length > 0 ? `\n\n${mentionSections.join('\n\n')}` : '';
+    const finalContent = `${content}${mentionAppend}`.trim();
     const hasFiles = files.length > 0;
 
-    if ((!content && !hasFiles) || disabled) return;
+    if ((!finalContent && !hasFiles) || disabled) return;
 
     // Check if it's a direct slash command typed in the input.
     if (!hasFiles) {
-      const slashResult = resolveDirectSlash(content);
+      const slashResult = resolveDirectSlash(finalContent);
       if (slashResult.action === 'immediate_command' || slashResult.action === 'set_badge' || slashResult.action === 'unknown_slash_badge') {
         // Slash commands must NOT execute or queue during streaming —
         // destructive commands (e.g. /clear) would race with the active stream.
@@ -262,7 +503,7 @@ export function MessageInput({
             return;
           }
         } else {
-          addBadge(slashResult.badge!);
+          addBadgeWithOrder(slashResult.badge!);
           setInputValue('');
           return;
         }
@@ -273,12 +514,61 @@ export function MessageInput({
     const cliAppend = buildCliAppend(cliBadge);
     if (cliBadge) setCliBadge(null);
 
-    onSend(content || 'Please review the attached file(s).', hasFiles ? files : undefined, cliAppend);
+    const displayOverride = mentionPayload.mentions.length > 0 ? content : undefined;
+    onSend(
+      finalContent || 'Please review the attached file(s).',
+      hasFiles ? files : undefined,
+      cliAppend,
+      displayOverride,
+      mentionPayload.mentions.length > 0 ? mentionPayload.mentions : undefined,
+    );
     setInputValue('');
-  }, [inputValue, onSend, onCommand, disabled, isStreaming, popover, badges, cliBadge, imageGen, addBadge, clearBadges, setCliBadge, setInputValue]);
+  }, [inputValue, mentionNodeTypes, onSend, onCommand, disabled, isStreaming, popover, badges, cliBadge, imageGen, addBadgeWithOrder, clearBadgesWithOrder, setCliBadge, setInputValue, fetchDirectorySummary, fetchMentionFileAttachment]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      // Mention token behavior: one Backspace removes the whole @path token.
+      if (e.key === 'Backspace') {
+        const ta = textareaRef.current;
+        const start = ta?.selectionStart ?? 0;
+        const end = ta?.selectionEnd ?? 0;
+        if (start === end && start > 0) {
+          const before = inputValue.slice(0, start);
+          const tokenMatch = before.match(/(^|\s)@([^\s@]+)\s$/) || before.match(/(^|\s)@([^\s@]+)$/);
+          if (tokenMatch) {
+            const mentionPath = (tokenMatch[2] || '').replace(/[.,!?;:)\]}]+$/, '');
+            if (mentionPath && mentionNodeTypes[mentionPath]) {
+              e.preventDefault();
+              const boundaryLen = (tokenMatch[1] || '').length;
+              const mentionStart = start - tokenMatch[0].length + boundaryLen;
+              const mentionEnd = start;
+              const next = `${inputValue.slice(0, mentionStart)}${inputValue.slice(mentionEnd)}`.replace(/\s{2,}/g, ' ');
+              const stillHasSamePath = parseMentionRefs(next).some((m) => m.path === mentionPath);
+              setInputValue(next);
+              if (!stillHasSamePath) {
+                setMentionNodeTypes((prev) => {
+                  const updated = { ...prev };
+                  delete updated[mentionPath];
+                  return updated;
+                });
+                setMentionOrder((prev) => {
+                  const updated = { ...prev };
+                  delete updated[mentionPath];
+                  return updated;
+                });
+              }
+              requestAnimationFrame(() => {
+                const el = textareaRef.current;
+                if (!el) return;
+                const pos = Math.max(0, Math.min(mentionStart, next.length));
+                el.setSelectionRange(pos, pos);
+              });
+              return;
+            }
+          }
+        }
+      }
+
       const action = resolveKeyAction(e.key, {
         popoverMode: popover.popoverMode,
         popoverHasItems: popover.popoverItems.length > 0,
@@ -311,7 +601,7 @@ export function MessageInput({
           e.preventDefault();
           // Backspace/Escape pops the most recently added badge; matches the
           // mental model of "undo my last selection".
-          if (badges.length > 0) removeBadge(badges[badges.length - 1].command);
+          if (badges.length > 0) removeBadgeWithOrder(badges[badges.length - 1].command);
           return;
 
         case 'remove_cli_badge':
@@ -348,8 +638,47 @@ export function MessageInput({
         }
       }
     },
-    [popover, slashCommands, cliToolsFetch, badges, cliBadge, inputValue, removeBadge, removeCliBadge]
+    [popover, slashCommands, cliToolsFetch, badges, cliBadge, inputValue, mentionNodeTypes, removeBadgeWithOrder, removeCliBadge, setInputValue]
   );
+
+  const uniqueMentions = useMemo(() => dedupeMentionsByPath(mentions), [mentions]);
+  const removeMention = useCallback((targetMention: MentionRef) => {
+    let removedPath = '';
+    let stillHasSamePath = false;
+    setInputValue((prev) => {
+      const parsed = parseMentionRefs(prev, mentionNodeTypes);
+      const exact = parsed.find((m) =>
+        m.path === targetMention.path
+        && m.sourceRange?.start === targetMention.sourceRange?.start
+        && m.sourceRange?.end === targetMention.sourceRange?.end
+      );
+      const target = exact || parsed.find((m) => m.path === targetMention.path);
+      if (!target?.sourceRange) return prev;
+      removedPath = target.path;
+      const { start, end } = target.sourceRange;
+      const before = prev.slice(0, start);
+      let after = prev.slice(end);
+      if (before.endsWith(' ') && after.startsWith(' ')) after = after.slice(1);
+      const next = `${before}${after}`.replace(/\s{2,}/g, ' ').trimStart();
+      stillHasSamePath = parseMentionRefs(next).some((m) => m.path === target.path);
+      return next;
+    });
+    if (!removedPath) return;
+    if (!stillHasSamePath) {
+      setMentionNodeTypes((prev) => {
+        if (!prev[removedPath]) return prev;
+        const next = { ...prev };
+        delete next[removedPath];
+        return next;
+      });
+      setMentionOrder((prev) => {
+        if (!prev[removedPath]) return prev;
+        const next = { ...prev };
+        delete next[removedPath];
+        return next;
+      });
+    }
+  }, [setInputValue, mentionNodeTypes]);
 
   // Effort selector state — guard against undefined when model not found in current provider's list
   const currentModelMeta = currentModelOption as (typeof currentModelOption & { supportsEffort?: boolean; supportedEffortLevels?: string[] }) | undefined;
@@ -424,8 +753,15 @@ export function MessageInput({
           >
             {/* Bridge: listens for file tree "+" button events */}
             <FileTreeAttachmentBridge />
-            {/* Command badges (multi-skill stacks; other kinds are singletons) */}
-            <CommandBadgeList badges={badges} onRemove={removeBadge} />
+            {/* Unified command + mention badges row */}
+            <ComposerBadgeRow
+              badges={badges}
+              mentions={uniqueMentions}
+              badgeOrder={badgeOrder}
+              mentionOrder={mentionOrder}
+              onRemoveBadge={removeBadgeWithOrder}
+              onRemoveMention={removeMention}
+            />
             {/* CLI badge */}
             {cliBadge && (
               <CliBadge name={cliBadge.name} onRemove={removeCliBadge} />

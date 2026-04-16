@@ -6,7 +6,7 @@
  */
 
 import { BUILT_IN_COMMANDS, COMMAND_PROMPTS } from '@/lib/constants/commands';
-import type { PopoverItem, PopoverMode, CommandBadge, CliBadge } from '@/types';
+import type { PopoverItem, PopoverMode, CommandBadge, CliBadge, MentionNodeType, MentionRef } from '@/types';
 
 // ─── Result types ────────────────────────────────────────────────
 
@@ -315,4 +315,46 @@ export function resolveDirectSlash(content: string): DirectSlashResult {
 export function buildCliAppend(cliBadge: CliBadge | null): string | undefined {
   if (!cliBadge) return undefined;
   return `The user wants to use the installed CLI tool "${cliBadge.name}" if appropriate for this task. Prefer using "${cliBadge.name}" when suitable.`;
+}
+
+/**
+ * Parse @mentions from raw input text and return structured mention refs.
+ * Mentions keep source ranges so the caller can reconcile edits/deletions.
+ */
+export function parseMentionRefs(
+  input: string,
+  nodeTypeLookup?: Record<string, MentionNodeType>,
+): MentionRef[] {
+  const refs: MentionRef[] = [];
+  if (!input) return refs;
+
+  const mentionRegex = /(^|\s)@([^\s@]+)/g;
+  for (const match of input.matchAll(mentionRegex)) {
+    const rawPath = (match[2] || '').replace(/[.,!?;:)\]}]+$/, '');
+    if (!rawPath) continue;
+    const full = match[0] || '';
+    const start = input.indexOf(full, match.index ?? 0) + full.lastIndexOf('@');
+    const end = start + rawPath.length + 1;
+    refs.push({
+      path: rawPath,
+      nodeType: nodeTypeLookup?.[rawPath] || 'file',
+      display: rawPath,
+      sourceRange: { start, end },
+    });
+  }
+  return refs;
+}
+
+/**
+ * Dedupe mentions by path (first mention wins).
+ */
+export function dedupeMentionsByPath(mentions: MentionRef[]): MentionRef[] {
+  const seen = new Set<string>();
+  const out: MentionRef[] = [];
+  for (const mention of mentions) {
+    if (seen.has(mention.path)) continue;
+    seen.add(mention.path);
+    out.push(mention);
+  }
+  return out;
 }

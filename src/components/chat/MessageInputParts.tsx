@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useCallback } from 'react';
-import { ArrowUp, Plus, X, Stop, Terminal } from '@/components/ui/icon';
+import { ArrowUp, Plus, X, Stop, Terminal, Brain, NotePencil, Lightning, File as FileIcon, Folder } from '@/components/ui/icon';
 import { Button } from '@/components/ui/button';
 import { useTranslation } from '@/hooks/useTranslation';
 import {
@@ -11,6 +11,7 @@ import {
 } from '@/components/ai-elements/prompt-input';
 import type { ChatStatus } from 'ai';
 import { isSubmitEnabled } from '@/lib/message-input-logic';
+import type { MentionRef, CommandBadge as CommandBadgeType } from '@/types';
 
 /**
  * Submit button that's aware of file attachments. Must be rendered inside PromptInput.
@@ -183,15 +184,22 @@ export function FileAttachmentsCapsules() {
  * Used by CommandBadgeList for both single- and multi-badge display.
  */
 export function CommandBadge({
-  command,
+  badge,
   onRemove,
 }: {
-  command: string;
+  badge: CommandBadgeType;
   onRemove: () => void;
 }) {
+  const icon = badge.kind === 'agent_skill'
+    ? <Brain size={12} />
+    : badge.kind === 'codepilot_command'
+      ? <Lightning size={12} />
+      : <NotePencil size={12} />;
+
   return (
     <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 text-primary pl-2.5 pr-1 py-1 text-xs font-medium border border-primary/20">
-      <span className="font-mono">{command}</span>
+      {icon}
+      <span className="font-mono">{badge.command}</span>
       <Button
         type="button"
         variant="ghost"
@@ -214,14 +222,14 @@ export function CommandBadgeList({
   badges,
   onRemove,
 }: {
-  badges: ReadonlyArray<{ command: string }>;
+  badges: ReadonlyArray<CommandBadgeType>;
   onRemove: (command: string) => void;
 }) {
   if (badges.length === 0) return null;
   return (
     <div className="flex w-full flex-wrap items-center gap-1.5 px-3 pt-2.5 pb-0 order-first">
       {badges.map((b) => (
-        <CommandBadge key={b.command} command={b.command} onRemove={() => onRemove(b.command)} />
+        <CommandBadge key={b.command} badge={b} onRemove={() => onRemove(b.command)} />
       ))}
     </div>
   );
@@ -252,6 +260,99 @@ export function CliBadge({
           <X size={12} />
         </Button>
       </span>
+    </div>
+  );
+}
+
+/**
+ * Mention badge for structured @ references.
+ */
+function MentionBadge({
+  mention,
+  onRemove,
+}: {
+  mention: MentionRef;
+  onRemove: (mention: MentionRef) => void;
+}) {
+  const isDirectory = mention.nodeType === 'directory';
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 text-primary pl-2.5 pr-1 py-1 text-xs font-medium border border-primary/20">
+      {isDirectory ? <Folder size={12} /> : <FileIcon size={12} />}
+      <span className="font-mono truncate max-w-[180px]">
+        @{mention.display}{isDirectory ? '/' : ''}
+      </span>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        onClick={() => onRemove(mention)}
+        className="ml-0.5 h-auto w-auto rounded-full p-0.5 hover:bg-primary/20"
+      >
+        <X size={12} />
+      </Button>
+    </span>
+  );
+}
+
+export function MentionBadgeList({
+  mentions,
+  onRemove,
+}: {
+  mentions: MentionRef[];
+  onRemove: (mention: MentionRef) => void;
+}) {
+  if (mentions.length === 0) return null;
+  return (
+    <div className="flex w-full flex-wrap items-center gap-1.5 px-3 pt-2.5 pb-0 order-first">
+      {mentions.map((m) => (
+        <MentionBadge key={`${m.path}-${m.nodeType}`} mention={m} onRemove={onRemove} />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Unified row for command badges and @mention badges so they appear in one line-flow.
+ */
+export function ComposerBadgeRow({
+  badges,
+  mentions,
+  badgeOrder,
+  mentionOrder,
+  onRemoveBadge,
+  onRemoveMention,
+}: {
+  badges: ReadonlyArray<CommandBadgeType>;
+  mentions: MentionRef[];
+  badgeOrder: Record<string, number>;
+  mentionOrder: Record<string, number>;
+  onRemoveBadge: (command: string) => void;
+  onRemoveMention: (mention: MentionRef) => void;
+}) {
+  if (badges.length === 0 && mentions.length === 0) return null;
+
+  const mixed = [
+    ...badges.map((b, idx) => ({
+      kind: 'badge' as const,
+      order: badgeOrder[b.command] ?? 100000 + idx,
+      key: `badge-${b.command}`,
+      badge: b,
+    })),
+    ...mentions.map((m, idx) => ({
+      kind: 'mention' as const,
+      order: mentionOrder[m.path] ?? (m.sourceRange?.start ?? 200000 + idx),
+      key: `mention-${m.path}-${m.nodeType}-${m.sourceRange?.start ?? idx}`,
+      mention: m,
+    })),
+  ].sort((a, b) => a.order - b.order);
+
+  return (
+    <div className="flex w-full flex-wrap items-center gap-1.5 px-3 pt-2.5 pb-0 order-first">
+      {mixed.map((item) =>
+        item.kind === 'badge'
+          ? <CommandBadge key={item.key} badge={item.badge} onRemove={() => onRemoveBadge(item.badge.command)} />
+          : <MentionBadge key={item.key} mention={item.mention} onRemove={onRemoveMention} />
+      )}
     </div>
   );
 }
