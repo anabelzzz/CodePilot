@@ -309,11 +309,13 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
         setHasSummary(true);
         // Phase 1b: if the user asked for "compress and retry", kick off
         // the retry now that compression actually finished. Stored flag
-        // + last user message are consumed once to avoid replaying on
-        // subsequent auto-compact events. Token gate (a per-request id)
-        // guarantees we only replay for the compact we ourselves kicked
-        // off — stale tokens from a failed/cancelled earlier request
-        // won't fire when a later auto-compact runs.
+        // + last user message are consumed once so we can't replay
+        // twice. Staleness protection uses (a) the arming-flag gate in
+        // the sendMessage wrapper to clear pending state on any
+        // subsequent user action, (b) the 45s timeout on the arm, and
+        // (c) the session-switch clear — no per-request / compact run
+        // id is wired through the SSE contract, so we rely on those
+        // three clears rather than a correlation token.
         if (pendingRetryAfterCompactRef.current && pendingRetryMessageRef.current) {
           const msg = pendingRetryMessageRef.current;
           clearPendingRetry();
