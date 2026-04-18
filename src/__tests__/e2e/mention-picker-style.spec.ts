@@ -27,7 +27,7 @@ test.describe('@ picker style smoke', () => {
     });
   });
 
-  test('@ opens a popover with search input, group header, and neutral icons', async ({ page }) => {
+  test('@ opens a popover with search input, group header, and neutral icons @smoke', async ({ page }) => {
     await goToChat(page);
 
     const input = page.locator('textarea[name="message"]').first();
