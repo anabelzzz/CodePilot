@@ -17,6 +17,7 @@ import { FolderPicker } from '@/components/chat/FolderPicker';
 import { useNativeFolderPicker } from '@/hooks/useNativeFolderPicker';
 import { useTranslation } from '@/hooks/useTranslation';
 import { usePanel } from '@/hooks/usePanel';
+import { maybeShowStatusToast } from '@/hooks/useSSEStream';
 
 interface ToolUseInfo {
   id: string;
@@ -605,6 +606,12 @@ export default function NewChatPage() {
                       setStatusText(`Connected (${statusData.model || 'claude'})`);
                       setTimeout(() => setStatusText(undefined), 2000);
                     } else if (statusData.notification) {
+                      // Shared toast routing so code-driven notifications
+                      // (e.g. RUNTIME_EFFORT_IGNORED) survive the next
+                      // status-text update on both the first-message flow
+                      // (this page) and the ongoing session flow
+                      // (useSSEStream via stream-session-manager).
+                      maybeShowStatusToast(statusData);
                       setStatusText(statusData.message || statusData.title || undefined);
                     } else {
                       setStatusText(event.data || undefined);

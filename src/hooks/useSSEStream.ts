@@ -54,9 +54,27 @@ export interface SSECallbacks {
  * Scoped narrowly — only codes that represent one-shot decisions the user
  * needs to see regardless of subsequent streaming progress belong here.
  */
-const TOAST_STATUS_CODES = new Set<string>([
+export const TOAST_STATUS_CODES = new Set<string>([
   'RUNTIME_EFFORT_IGNORED', // Opus 4.7 on native runtime — explicit effort dropped
 ]);
+
+/**
+ * Inspect a parsed status event payload and fire a toast when it carries a
+ * whitelisted code. Exposed so both useSSEStream's helper and inline SSE
+ * parsers in page-level components can share toast routing without
+ * duplicating the whitelist. No-op when the code isn't on the whitelist
+ * or when the browser toast registry hasn't initialized (tests / SSR).
+ */
+export function maybeShowStatusToast(statusData: { code?: string; message?: string; title?: string }): void {
+  if (!statusData?.code || !TOAST_STATUS_CODES.has(statusData.code)) return;
+  void import('./useToast').then(({ showToast }) => {
+    showToast({
+      type: statusData.code === 'RUNTIME_EFFORT_IGNORED' ? 'warning' : 'info',
+      message: statusData.message || statusData.title || 'Status notification',
+      duration: 8000,
+    });
+  }).catch(() => { /* toast system unavailable — caller falls back to status text */ });
+}
 
 /**
  * Parse a single SSE line (after stripping "data: " prefix) and dispatch
@@ -167,21 +185,11 @@ function handleSSEEvent(
             output_style: statusData.output_style,
           });
         } else if (statusData.notification) {
-          // Code-driven toasts: some status events (e.g. the Opus 4.7
-          // native-runtime RUNTIME_EFFORT_IGNORED warning) are one-shot
-          // decisions that must persist past the next status-text update.
-          // Route those through the global toast system so they survive
-          // the subsequent 'connected' / streaming status overwrite that
-          // setStatusText() would otherwise apply.
-          if (statusData.code && TOAST_STATUS_CODES.has(statusData.code)) {
-            void import('./useToast').then(({ showToast }) => {
-              showToast({
-                type: statusData.code === 'RUNTIME_EFFORT_IGNORED' ? 'warning' : 'info',
-                message: statusData.message || statusData.title || 'Status notification',
-                duration: 8000,
-              });
-            }).catch(() => { /* toast system unavailable — fall through to status text */ });
-          }
+          // Code-driven toasts (e.g. Opus 4.7 native-runtime
+          // RUNTIME_EFFORT_IGNORED): route through the shared helper so
+          // the inline parser in app/chat/page.tsx can reuse the same
+          // whitelist without duplicating the toast import logic.
+          maybeShowStatusToast(statusData);
           callbacks.onStatus(statusData.message || statusData.title || undefined);
         } else {
           callbacks.onStatus(typeof event.data === 'string' ? event.data : undefined);
