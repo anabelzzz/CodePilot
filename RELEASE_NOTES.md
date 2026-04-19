@@ -29,6 +29,14 @@
 
 这是为了让 CodePilot 的每个请求都能精确地知道该走哪个服务商的凭据，避免之前 cc-switch 代理模式下占位符 token 被错当成真凭据而导致的各种诡异失败。你仍可以继续用 cc-switch 管理 Claude Code CLI 本身的凭据——两者是独立的。
 
+## 已知限制
+
+下列项在本版是明确登记的限制或技术债务，不影响主功能，但发版 gate 里需要看清楚：
+
+- **`@file` / `@directory` mention 不识别含空格的路径**。picker 插入和拖拽目录都会失败——`parseMentionRefs` 用空格分词，`docs/Product Spec.md` 只会读成 `docs/Product`，chip 消失、结构化 mention 不发送。tech-debt #8，下个小 PR 单独修（同步改 token 转义 + parser + Backspace）
+- **E2E gate 覆盖收窄**。`npm run test:e2e` 仍然绿，但 layout / plugins / settings / skills / project-panel / visual-regression 等 describe 块被明确 `test.describe.skip` 掉（~110 个测试）。这些 spec 都在测已被重写的旧版 UI（sr-only "Toggle sidebar"、"Plugins & Skills" 落地页、pre-PanelZone 右侧面板、旧 settings tab 结构），在新 UI 下不再可用。单元测试 1084 条、smoke 6 条全绿，能用的集成覆盖仍在；但 **layout / plugins / settings 的回归目前只能靠手动或 CDP 抽查**，不能指望 E2E 挡住。tech-debt #9，下一轮按当前 UI 重写
+- **`npm run build` 剩一条 Turbopack NFT warning**。构建通过，指向 `instrumentation.js` 与 `/api/files/suggest` route chunk 共享的情况。已经把 `outputFileTracingExcludes` + 静态 JSON import 把 16 条降到 1 条；这最后一条要等 Turbopack 侧修好或者 instrumentation 完全独立于用户路径扫描才能清掉。不影响 Electron 打包（NFT 清单在桌面端不消费）
+
 ## 下载地址
 
 ### macOS

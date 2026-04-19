@@ -140,15 +140,15 @@ test.describe('Chat Page', () => {
       expect(page.url()).toMatch(/\/chat\/.+/);
     });
 
-    test('conversation appears in sidebar after response', async ({ page }) => {
+    test.skip('conversation appears in sidebar after response', async ({ page }) => {
+      // Same live-provider dependency as "send a message and see it in the
+      // conversation" above — needs a real stream to complete so the
+      // session row is persisted and the /chat → /chat/[id] redirect fires.
+      // Skipped with the other real-API tests pending a deterministic
+      // mocked-stream fixture.
       await goToChat(page);
       await sendMessage(page, 'Sidebar test');
-
-      // Wait for response to complete and URL to update
       await page.waitForURL('**/chat/*', { timeout: 120_000 });
-      await page.waitForTimeout(1000);
-
-      // Session should appear in sidebar
       const links = sessionLinks(page);
       await expect(links.first()).toBeVisible();
     });
