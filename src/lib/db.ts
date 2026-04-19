@@ -389,6 +389,24 @@ function migrateDb(db: Database.Database): void {
   if (!colNames.includes('context_summary_updated_at')) {
     safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN context_summary_updated_at TEXT NOT NULL DEFAULT ''");
   }
+  // Coverage boundary (legacy, timestamp-based): created_at string of the
+  // last covered message. Superseded by context_summary_boundary_rowid
+  // because second-precision wall-clock timestamps can't distinguish a
+  // last-compressed message from a first-kept message written in the same
+  // second. Kept as a column for migration / UI-debug compatibility; NO
+  // CODE PATH should read or write it for filtering decisions.
+  if (!colNames.includes('context_summary_boundary_at')) {
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN context_summary_boundary_at TEXT NOT NULL DEFAULT ''");
+  }
+  // Coverage boundary (authoritative): SQLite rowid of the last message
+  // actually covered by the current summary. rowid is monotonic per insert,
+  // so it can disambiguate same-second writes the timestamp column cannot.
+  // 0 = "no boundary" (legacy rows, reactive-compact paths with no DB rowid
+  // metadata, sessions whose summary predates this column). Filter passes
+  // history through unchanged when boundaryRowid is 0.
+  if (!colNames.includes('context_summary_boundary_rowid')) {
+    safeAddColumn(db, "ALTER TABLE chat_sessions ADD COLUMN context_summary_boundary_rowid INTEGER NOT NULL DEFAULT 0");
+  }
   db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_runtime_status ON chat_sessions(runtime_status)");
 
   // Migrate is_active provider to default_provider_id setting
@@ -950,23 +968,47 @@ export function getSession(id: string): ChatSession | undefined {
   return db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(id) as ChatSession | undefined;
 }
 
-export function getSessionSummary(sessionId: string): { summary: string; updatedAt: string } {
+export function getSessionSummary(sessionId: string): {
+  summary: string;
+  /** Wall-clock time the summary row was written (UI/debug only — do NOT use as coverage boundary) */
+  updatedAt: string;
+  /** SQLite rowid of the last message covered by the summary; 0 = no boundary known */
+  boundaryRowid: number;
+} {
   const db = getDb();
   const row = db.prepare(
-    'SELECT context_summary, context_summary_updated_at FROM chat_sessions WHERE id = ?'
-  ).get(sessionId) as { context_summary: string; context_summary_updated_at: string } | undefined;
+    'SELECT context_summary, context_summary_updated_at, context_summary_boundary_rowid FROM chat_sessions WHERE id = ?'
+  ).get(sessionId) as { context_summary: string; context_summary_updated_at: string; context_summary_boundary_rowid: number } | undefined;
   return {
     summary: row?.context_summary || '',
     updatedAt: row?.context_summary_updated_at || '',
+    boundaryRowid: row?.context_summary_boundary_rowid ?? 0,
   };
 }
 
-export function updateSessionSummary(sessionId: string, summary: string): void {
+/**
+ * Write a new context summary together with its coverage boundary.
+ *
+ * `boundaryRowid` MUST be the SQLite rowid of the last message actually
+ * covered by this summary (i.e. the last entry in messagesToCompress for the
+ * auto pre-compression path, or the last row of allMsgs for manual /compact).
+ * Pass 0 only when the caller has no DB rowid available (reactive compact
+ * inside streamClaude receives {role, content} pairs with no DB metadata);
+ * 0 causes filterHistoryByCompactBoundary to passthrough — degraded but safe.
+ *
+ * Do NOT pass `new Date()` or any wall-clock time here: write time and
+ * coverage boundary diverge on the auto pre-compression path (see
+ * filterHistoryByCompactBoundary doc). And do NOT reuse an earlier timestamp
+ * column for filtering — second-precision timestamps can't distinguish a
+ * last-compressed message from a first-kept message written in the same
+ * second. rowid is the only robust boundary.
+ */
+export function updateSessionSummary(sessionId: string, summary: string, boundaryRowid: number): void {
   const db = getDb();
   const now = new Date().toISOString().replace('T', ' ').split('.')[0];
   db.prepare(
-    'UPDATE chat_sessions SET context_summary = ?, context_summary_updated_at = ? WHERE id = ?'
-  ).run(summary, now, sessionId);
+    'UPDATE chat_sessions SET context_summary = ?, context_summary_updated_at = ?, context_summary_boundary_rowid = ? WHERE id = ?'
+  ).run(summary, now, boundaryRowid, sessionId);
 }
 
 export function createSession(

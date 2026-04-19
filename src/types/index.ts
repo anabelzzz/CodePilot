@@ -142,6 +142,13 @@ export interface Message {
   created_at: string;
   token_usage: string | null; // JSON string of TokenUsage
   is_heartbeat_ack?: number; // 1 = heartbeat ack (prunable from transcript), 0 = normal
+  /**
+   * SQLite rowid, monotonically increasing per insert — used as the compact
+   * coverage boundary (see `context_summary_boundary_rowid`). Populated by
+   * `getMessages()` which does `SELECT *, rowid as _rowid`. Optional here
+   * because some code paths synthesize Message-like objects without DB origin.
+   */
+  _rowid?: number;
 }
 
 // Media content block (MCP-compatible: image/audio/video in tool results)
@@ -1046,6 +1053,22 @@ export interface StreamEvent {
 
 export type StreamEventListener = (event: StreamEvent) => void;
 
+/**
+ * One history row passed via ClaudeStreamOptions.conversationHistory.
+ *
+ * `_rowid` is the SQLite rowid of the original DB row, propagated so that
+ * reactive compact (claude-client.ts) can write a correct
+ * context_summary_boundary_rowid on CONTEXT_TOO_LONG retry. Synthesized /
+ * non-DB-origin rows may omit it — callers that only have {role, content}
+ * pairs (e.g. bridge transports, fallback paths) don't need to fabricate a
+ * rowid; the boundary helper falls back to the existing session boundary.
+ */
+export type ConversationHistoryItem = {
+  role: 'user' | 'assistant';
+  content: string;
+  _rowid?: number;
+};
+
 export interface ClaudeStreamOptions {
   prompt: string;
   sessionId: string;
@@ -1065,9 +1088,13 @@ export interface ClaudeStreamOptions {
   /** Session's stored provider ID — passed to resolveForClaudeCode */
   sessionProviderId?: string;
   /** Recent conversation history from DB — used as fallback context when SDK resume is unavailable or fails */
-  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  conversationHistory?: ConversationHistoryItem[];
   /** Compressed session summary — used as context skeleton in fallback mode */
   sessionSummary?: string;
+  /** Existing compact coverage boundary (rowid). Reactive compact preserves this
+   *  rather than resetting to 0 when it cannot derive a new boundary from _rowid
+   *  metadata in conversationHistory. */
+  sessionSummaryBoundaryRowid?: number;
   /** Token budget for fallback history — messages beyond this budget are truncated */
   fallbackTokenBudget?: number;
   onRuntimeStatusChange?: (status: string) => void;

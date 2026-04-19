@@ -1593,8 +1593,8 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
             console.log('[claude-client] CONTEXT_TOO_LONG detected — attempting auto-compress + retry');
             controller.enqueue(formatSSE({ type: 'status', data: JSON.stringify({ notification: true, message: 'context_compressing_retry' }) }));
 
-            const { compressConversation } = await import('./context-compressor');
-            const { updateSessionSummary: updateSummary } = await import('@/lib/db');
+            const { compressConversation, resolveReactiveCompactBoundaryRowid } = await import('./context-compressor');
+            const { updateSessionSummary: updateSummary, getSessionSummary } = await import('@/lib/db');
             const compResult = await compressConversation({
               sessionId,
               messages: conversationHistory,
@@ -1602,7 +1602,29 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
               providerId: options.providerId || options.sessionProviderId,
               sessionModel: model,
             });
-            updateSummary(sessionId, compResult.summary);
+            // Derive boundary from rowids plumbed through conversationHistory.
+            // Invariant: reactive compact here hands the WHOLE
+            // conversationHistory to compressConversation — no keep/compress
+            // split — so the last row with a known _rowid is exactly the
+            // last DB row this summary covers.
+            //
+            // Fallback (no _rowid in history): use Math.max of the DB's
+            // CURRENT boundary and the caller's hint. Re-reading DB here
+            // matters because an auto pre-compression earlier in the same
+            // request may have already advanced the boundary past what
+            // options.sessionSummaryBoundaryRowid captured (that value was
+            // snapshotted in chat/route.ts before auto pre-compression ran).
+            // Without the re-read, a degraded reactive compact could
+            // silently roll the DB boundary back to a stale value.
+            const existingBoundary = Math.max(
+              getSessionSummary(sessionId).boundaryRowid,
+              options.sessionSummaryBoundaryRowid ?? 0,
+            );
+            const reactiveBoundaryRowid = resolveReactiveCompactBoundaryRowid({
+              history: conversationHistory,
+              existingBoundaryRowid: existingBoundary,
+            });
+            updateSummary(sessionId, compResult.summary, reactiveBoundaryRowid);
             options.sessionSummary = compResult.summary;
             // Recalculate fallback budget with new summary size
             const newSummaryTokens = roughTokenEstimate(compResult.summary);

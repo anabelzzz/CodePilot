@@ -81,37 +81,107 @@ export async function POST(request: NextRequest) {
     // ── /compact command handler ────────────────────────────────────
     if (content.trim() === '/compact') {
       try {
-        const { compressConversation, resetCompressionState } = await import('@/lib/context-compressor');
-        const { getMessages: getDbMessages, getSessionSummary: getDbSummary, updateSessionSummary: updateDbSummary, addMessage: addDbMessage } = await import('@/lib/db');
+        const { compressConversation, resetCompressionState, filterHistoryByCompactBoundary } = await import('@/lib/context-compressor');
+        const { getMessages: getDbMessages, getSessionSummary: getDbSummary, updateSessionSummary: updateDbSummary } = await import('@/lib/db');
+        // Note: addMessage is intentionally NOT imported here. Neither the
+        // success path nor the no-op path persists slash-command feedback
+        // to DB — both are UI artifacts that would otherwise land after
+        // context_summary_boundary_rowid and leak into the model's
+        // transcript on subsequent turns. Repeated /compact calls would
+        // accumulate those rows and eventually get folded into the next
+        // summary. SSE frames convey the outcome to the user; the DB stays
+        // clean. See the regression test in
+        // context-compressor-handoff.test.ts that scans this block for
+        // any addMessage/addDbMessage call.
 
         resetCompressionState(session_id);
         const { messages: allMsgs } = getDbMessages(session_id, { limit: 200, excludeHeartbeatAck: true });
-        const existingSummary = getDbSummary(session_id).summary;
+        const existingSummaryData = getDbSummary(session_id);
 
-        if (allMsgs.length < 4) {
-          const msg = '对话还很短，暂不需要压缩。';
-          addDbMessage(session_id, 'assistant', JSON.stringify([{ type: 'text', text: msg }]));
+        // If a prior summary exists, only compress rows strictly after its
+        // coverage boundary. Without this, a second /compact would feed
+        // existingSummary + messages already covered by existingSummary +
+        // newer messages into the summarizer and duplicate the old context
+        // inside the new summary. This mirrors the auto pre-compression
+        // path (which filters by boundary via filterHistoryByCompactBoundary
+        // before estimating / compressing).
+        const rowsToCompactCandidate = filterHistoryByCompactBoundary({
+          history: allMsgs,
+          summary: existingSummaryData.summary,
+          summaryBoundaryRowid: existingSummaryData.boundaryRowid,
+        });
+
+        if (rowsToCompactCandidate.length < 4) {
+          // Short path: either the whole conversation is short, or it's
+          // already compacted and there's not enough NEW material to
+          // warrant another pass. Either way: no compression, no SDK
+          // session invalidation, no context_compressed event. hasSummary
+          // must not flip because nothing new got summarized.
+          //
+          // Do NOT addDbMessage this notice. It's a UI artifact like the
+          // success-path confirmation. Persisting it would land a row
+          // AFTER context_summary_boundary_rowid, and on the next
+          // fallback/estimation pass the filter would keep it as real
+          // assistant context. Repeated /compact in an already-compacted
+          // session would accumulate these rows and the next real compact
+          // would fold them into the summary. SSE delivers the message
+          // to the user on this turn; the DB transcript stays clean.
+          const msg = existingSummaryData.summary
+            ? '上下文已经压缩过，新消息不多，暂不需要再次压缩。'
+            : '对话还很短，暂不需要压缩。';
           releaseSessionLock(session_id, lockId);
           setSessionRuntimeStatus(session_id, 'idle');
           const sseData = `data: ${JSON.stringify({ type: 'text', data: msg })}\n\ndata: ${JSON.stringify({ type: 'done' })}\n\n`;
           return new Response(sseData, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' } });
         }
 
-        const msgData = allMsgs.map(m => ({ role: m.role, content: m.content }));
+        const msgData = rowsToCompactCandidate.map(m => ({ role: m.role, content: m.content }));
         const result = await compressConversation({
           sessionId: session_id,
           messages: msgData,
-          existingSummary: existingSummary || undefined,
+          existingSummary: existingSummaryData.summary || undefined,
           providerId: provider_id || session.provider_id || undefined,
           sessionModel: model || session.model || undefined,
         });
 
-        updateDbSummary(session_id, result.summary);
+        // Coverage boundary = rowid of the last message actually compressed
+        // in THIS pass (the last of rowsToCompactCandidate). If the filter
+        // returned nothing (shouldn't happen — short path above covers it)
+        // fall back to the existing boundary rather than resetting to 0.
+        const compactBoundaryRowid =
+          rowsToCompactCandidate[rowsToCompactCandidate.length - 1]._rowid
+          ?? existingSummaryData.boundaryRowid
+          ?? 0;
+        // Do NOT persist the confirmation message to DB. It's a UI artifact
+        // — the summary + SSE frame already convey the outcome. Persisting it
+        // as an assistant message would leak "上下文已压缩..." into the
+        // transcript the model sees on subsequent turns (rowid > boundary
+        // → kept by filter). Claude Code's own /compact handler behaves the
+        // same way: slash-command feedback stays out of the model's context.
         const msg = `上下文已压缩。压缩了 ${result.messagesCompressed} 条消息，预计节省 ~${Math.round(result.estimatedTokensSaved / 1000)}K tokens。`;
-        addDbMessage(session_id, 'assistant', JSON.stringify([{ type: 'text', text: msg }]));
+        updateDbSummary(session_id, result.summary, compactBoundaryRowid);
+        // Invalidate the SDK session so the next user message does NOT resume
+        // the old (pre-compaction) transcript. Without this, the Claude Code
+        // SDK keeps using its own full history on resume and our fresh summary
+        // would never reach the model — reactive compact would re-trigger on
+        // the very next turn. See feedback_db_migration_safety note: we only
+        // clear the session-id link, never the underlying messages.
+        updateSdkSessionId(session_id, '');
         releaseSessionLock(session_id, lockId);
         setSessionRuntimeStatus(session_id, 'idle');
-        const sseData = `data: ${JSON.stringify({ type: 'text', data: msg })}\n\ndata: ${JSON.stringify({ type: 'done' })}\n\n`;
+        // Emit context_compressed BEFORE the text event so the SSE consumer
+        // (useSSEStream) updates hasSummary via the dedicated dispatch path
+        // before the text arrives and the stream terminates.
+        const compressedStatusFrame = `data: ${JSON.stringify({
+          type: 'status',
+          data: JSON.stringify(buildContextCompressedStatus({
+            messagesCompressed: result.messagesCompressed,
+            tokensSaved: result.estimatedTokensSaved,
+          })),
+        })}\n\n`;
+        const sseData = compressedStatusFrame
+          + `data: ${JSON.stringify({ type: 'text', data: msg })}\n\n`
+          + `data: ${JSON.stringify({ type: 'done' })}\n\n`;
         return new Response(sseData, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' } });
       } catch (compactErr) {
         console.error('[chat API] /compact failed:', compactErr);
@@ -243,14 +313,35 @@ export async function POST(request: NextRequest) {
     // Fetch up to 200 messages (DB query is cheap); actual truncation is done
     // by buildFallbackContext using a token budget, not a fixed message count.
     const { messages: recentMsgs } = getMessages(session_id, { limit: 200, excludeHeartbeatAck: true });
+    // Load session summary for compression-aware fallback (needed before the
+    // compact-boundary filter below).
+    const sessionSummaryData = getSessionSummary(session_id);
+
     // Exclude the user message we just saved (last in the list) — it's already the prompt
-    const historyMsgs = recentMsgs.slice(0, -1).map(m => ({
+    const historyBeforeBoundary = recentMsgs.slice(0, -1);
+    // Drop history at-or-before the coverage boundary
+    // (context_summary_boundary_rowid — the rowid of the last message
+    // actually covered by the summary). Rowid, not timestamp: disambiguates
+    // same-second writes. See filterHistoryByCompactBoundary doc.
+    const { filterHistoryByCompactBoundary } = await import('@/lib/context-compressor');
+    const historyAfterBoundary = filterHistoryByCompactBoundary({
+      history: historyBeforeBoundary,
+      summary: sessionSummaryData.summary,
+      summaryBoundaryRowid: sessionSummaryData.boundaryRowid,
+    });
+    if (historyAfterBoundary.length < historyBeforeBoundary.length) {
+      console.log(`[chat API] Compact boundary filter: dropped ${historyBeforeBoundary.length - historyAfterBoundary.length} messages at-or-before rowid ${sessionSummaryData.boundaryRowid}, kept ${historyAfterBoundary.length}`);
+    }
+    // Preserve _rowid through to streamClaude: if a CONTEXT_TOO_LONG
+    // reactive compact fires inside streamClaude on this turn, it needs the
+    // rowids in conversationHistory to write a correct
+    // context_summary_boundary_rowid. Without this, reactive compact would
+    // fall back to the "preserve existing boundary" degraded path.
+    const historyMsgs = historyAfterBoundary.map(m => ({
       role: m.role as 'user' | 'assistant',
       content: m.content,
+      _rowid: m._rowid,
     }));
-
-    // Load session summary for compression-aware fallback
-    const sessionSummaryData = getSessionSummary(session_id);
 
     // Detect actual image agent mode by checking for the specific design agent prompt,
     // not just any systemPromptAppend (which could come from CLI badges or skills).
@@ -287,6 +378,15 @@ export async function POST(request: NextRequest) {
     let fallbackTokenBudget: number | undefined;
     let compressionOccurred = false;
     let compressionStats: { messagesCompressed: number; tokensSaved: number } | null = null;
+
+    // Stream handoff variables. Default to the resume path (use the stored SDK
+    // session, full history). When auto-compression succeeds below, these get
+    // switched to the fresh-session path via planStreamHandoffAfterCompaction:
+    // sdkSessionId = undefined (force fresh SDK session so our new summary is
+    // actually seen by the model) and conversationHistory = messagesToKeep
+    // (avoid feeding the summary + the turns that summary already covers).
+    let streamSdkSessionId: string | undefined = session.sdk_session_id || undefined;
+    let streamConversationHistory: typeof historyMsgs = historyMsgs;
 
     try {
       const { estimateContextTokens } = await import('@/lib/context-estimator');
@@ -329,17 +429,29 @@ export async function POST(request: NextRequest) {
       if (needsCompression(estimate.total, contextWindow, session_id)) {
         console.log(`[chat API] Context at ${((estimate.total / contextWindow) * 100).toFixed(1)}% — triggering compression`);
 
-        // Determine which messages to compress using normalized sizes (consistent with estimate)
+        // Slice keep/compress on the raw DB rows (with _rowid) FIRST, then
+        // map to {role, content} when calling compressConversation. This
+        // preserves rowid on rowsToCompress so we can write the true
+        // coverage boundary below. historyMsgs[i] corresponds 1:1 to
+        // historyAfterBoundary[i] (same filter result, the map at L299
+        // just drops fields).
         const recentBudget = Math.floor(contextWindow * 0.5);
-        const messagesToKeep: typeof historyMsgs = [];
+        const rowsToKeep: typeof historyAfterBoundary = [];
         let keptTokens = 0;
         for (let i = normalizedHistory.length - 1; i >= 0; i--) {
           const msgTokens = roughTokenEstimate(normalizedHistory[i].content) + 10;
           if (keptTokens + msgTokens > recentBudget) break;
-          messagesToKeep.unshift(historyMsgs[i]); // Keep raw msg for compression input
+          rowsToKeep.unshift(historyAfterBoundary[i]);
           keptTokens += msgTokens;
         }
-        const messagesToCompress = historyMsgs.slice(0, historyMsgs.length - messagesToKeep.length);
+        const rowsToCompress = historyAfterBoundary.slice(0, historyAfterBoundary.length - rowsToKeep.length);
+        // messagesToKeep must carry _rowid through — if a reactive compact
+        // fires on this same turn (CONTEXT_TOO_LONG retry) it will see
+        // these rows as conversationHistory and need the rowids to write a
+        // correct boundary. messagesToCompress only feeds compressConversation
+        // which needs role/content; no need to plumb _rowid there.
+        const messagesToKeep = rowsToKeep.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content, _rowid: m._rowid }));
+        const messagesToCompress = rowsToCompress.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
         if (messagesToCompress.length > 0) {
           try {
@@ -351,7 +463,18 @@ export async function POST(request: NextRequest) {
               sessionModel: effectiveModel || undefined,
             });
             activeSessionSummary = result.summary;
-            updateSessionSummary(session_id, result.summary);
+            // Coverage boundary = rowid of the last message actually in
+            // messagesToCompress. rowid, not timestamp: rowsToCompress.last
+            // and rowsToKeep.first may share a second on fast paths and the
+            // strict-gt filter would mis-classify one of them. Do NOT use
+            // summary WRITE time: the current user turn was addMessage'd
+            // just before this branch ran and sits at a created_at slightly
+            // earlier than "now", which would silently drop it on the next
+            // turn's filter. The user turn has rowid strictly greater than
+            // any row in rowsToCompress, so the rowid boundary naturally
+            // spares it.
+            const autoCompactBoundaryRowid = rowsToCompress[rowsToCompress.length - 1]._rowid ?? 0;
+            updateSessionSummary(session_id, result.summary, autoCompactBoundaryRowid);
             // Recalculate budget with new (larger) summary
             const newSummaryTokens = roughTokenEstimate(result.summary);
             const userMsgTokens = roughTokenEstimate(content);
@@ -364,7 +487,21 @@ export async function POST(request: NextRequest) {
               messagesCompressed: result.messagesCompressed,
               tokensSaved: result.estimatedTokensSaved,
             };
-            console.log(`[chat API] Compressed ${result.messagesCompressed} messages, saved ~${result.estimatedTokensSaved} tokens`);
+
+            // Force this turn AND all subsequent turns off SDK resume — see
+            // planStreamHandoffAfterCompaction for the rationale.
+            updateSdkSessionId(session_id, '');
+            const { planStreamHandoffAfterCompaction } = await import('@/lib/context-compressor');
+            const handoff = planStreamHandoffAfterCompaction({
+              compressed: true,
+              originalHistory: historyMsgs,
+              messagesToKeep,
+              originalSdkSessionId: streamSdkSessionId,
+            });
+            streamSdkSessionId = handoff.sdkSessionId;
+            streamConversationHistory = handoff.conversationHistory;
+
+            console.log(`[chat API] Compressed ${result.messagesCompressed} messages, saved ~${result.estimatedTokensSaved} tokens; cleared SDK session, switching to fresh query with summary + ${messagesToKeep.length} recent turns`);
           } catch (compErr) {
             console.warn('[chat API] Compression failed, proceeding without:', compErr);
           }
@@ -378,14 +515,18 @@ export async function POST(request: NextRequest) {
     console.log('[chat API] streamClaude params:', {
       promptLength: content.length,
       promptFirst200: content.slice(0, 200),
-      sdkSessionId: session.sdk_session_id || 'none',
+      // Log the handoff value, not the DB value — after auto-compaction these
+      // diverge and the handoff is what streamClaude actually receives.
+      sdkSessionId: streamSdkSessionId || 'none',
+      compressionOccurred,
+      historyMessageCount: streamConversationHistory.length,
       systemPromptLength: finalSystemPrompt?.length || 0,
       systemPromptFirst200: finalSystemPrompt?.slice(0, 200) || 'none',
     });
     const stream = streamClaude({
       prompt: content,
       sessionId: session_id,
-      sdkSessionId: session.sdk_session_id || undefined,
+      sdkSessionId: streamSdkSessionId,
       model: resolved.upstreamModel || resolved.model || effectiveModel,
       systemPrompt: finalSystemPrompt,
       workingDirectory: session.sdk_cwd || session.working_directory || undefined,
@@ -398,8 +539,14 @@ export async function POST(request: NextRequest) {
       providerId: effectiveProviderId || undefined,
       sessionProviderId: session.provider_id || undefined,
       mcpServers,
-      conversationHistory: historyMsgs,
+      conversationHistory: streamConversationHistory,
       sessionSummary: activeSessionSummary,
+      // Plumbed through so reactive compact (CONTEXT_TOO_LONG retry inside
+      // streamClaude) can preserve the already-established boundary when
+      // conversationHistory has no _rowid to derive a new one from. Prevents
+      // a degraded reactive compact from silently resetting a real boundary
+      // back to 0 and regressing the next turn's filter to passthrough.
+      sessionSummaryBoundaryRowid: sessionSummaryData.boundaryRowid,
       fallbackTokenBudget,
       bypassPermissions,
       thinking: thinking as ClaudeStreamOptions['thinking'],

@@ -1,6 +1,9 @@
 # 上下文管理系统 — 技术交接文档
 
 > 产品思考见 [docs/insights/context-management.md](../insights/context-management.md)
+>
+> 压缩覆盖边界（boundary rowid、不变量、三条压缩路径的一致写法）见
+> [compact-coverage-boundary.md](./compact-coverage-boundary.md)
 
 ## 概述
 
