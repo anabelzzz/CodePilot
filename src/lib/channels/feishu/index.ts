@@ -60,7 +60,7 @@ export class FeishuChannelPlugin implements ChannelPlugin<FeishuConfig> {
 
   getCapabilities(): ChannelCapabilities {
     return {
-      streaming: true,
+      streaming: false,
       threadReply: true,
       search: false,  // True server-side search requires user_access_token; we only have local filtering
       history: true,

@@ -699,6 +699,7 @@ async function handleMessage(
     type: string;
     id?: string;
     name?: string;
+    input?: Record<string, unknown>;
     tool_use_id?: string;
     is_error?: boolean;
   }
@@ -706,7 +707,7 @@ async function handleMessage(
   if (cardController) {
     onToolEvent = (event: ToolEvent) => {
       if (event.type === 'tool_use') {
-        cardToolCalls.push({ id: event.id!, name: event.name!, status: 'running' });
+        cardToolCalls.push({ id: event.id!, name: event.name!, status: 'running', input: event.input });
       } else if (event.type === 'tool_result') {
         const tc = cardToolCalls.find((t) => t.id === event.tool_use_id);
         if (tc) tc.status = event.is_error ? 'error' : 'complete';

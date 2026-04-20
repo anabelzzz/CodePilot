@@ -2,8 +2,8 @@
  * Feishu Card Streaming Controller
  *
  * Manages streaming card lifecycle via CardKit v1 API.
- * Uses cardkit.v1.card for card CRUD, cardkit.v1.cardElement.content
- * for streaming text updates (typewriter effect).
+ * Text streams via cardkit.v1.cardElement.content (typewriter effect).
+ * Running tool calls are appended to text content, cleared when text advances.
  *
  * State machine: idle → creating → streaming → completed | interrupted | error
  */
@@ -44,13 +44,10 @@ interface CardState {
   startTime: number;
   throttleTimer: ReturnType<typeof setTimeout> | null;
   pendingText: string | null;
-  /** Current tool calls being tracked */
   toolCalls: ToolCallInfo[];
-  /** Whether we're in thinking state (before text starts flowing) */
   thinking: boolean;
 }
 
-/** Format elapsed time for footer display */
 function formatElapsed(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const sec = ms / 1000;
@@ -60,14 +57,42 @@ function formatElapsed(ms: number): string {
   return `${min}m ${remSec}s`;
 }
 
-/** Build tool progress lines for card display */
-function buildToolProgressMarkdown(tools: ToolCallInfo[]): string {
-  if (tools.length === 0) return '';
-  const lines = tools.map((tc) => {
-    const icon = tc.status === 'running' ? '🔄' : tc.status === 'complete' ? '✅' : '❌';
-    return `${icon} \`${tc.name}\``;
+const TOOL_SUMMARY_MAX_LEN = 80;
+
+function summarizeToolInput(name: string, input?: Record<string, unknown>): string {
+  if (!input) return '';
+  const key =
+    input.command ?? input.file_path ?? input.path ?? input.pattern ?? input.query ?? input.url;
+  if (key == null) return '';
+  let summary = String(key);
+  if (name === 'Grep' && input.path) {
+    summary = `"${summary}" in ${input.path}`;
+  }
+  if (summary.length > TOOL_SUMMARY_MAX_LEN) {
+    summary = summary.slice(0, TOOL_SUMMARY_MAX_LEN) + '…';
+  }
+  return summary;
+}
+
+function buildRunningToolsMarkdown(tools: ToolCallInfo[]): string {
+  const running = tools.filter(t => t.status === 'running');
+  if (running.length === 0) return '';
+  const lines = running.map((tc) => {
+    const detail = summarizeToolInput(tc.name, tc.input);
+    return detail ? `🔄 \`${tc.name}\`: ${detail}` : `🔄 \`${tc.name}\``;
   });
-  return lines.join('\n');
+  return '\n\n' + lines.join('\n');
+}
+
+function buildFinalToolSummary(tools: ToolCallInfo[]): string {
+  const completed = tools.filter(t => t.status === 'complete').length;
+  const errored = tools.filter(t => t.status === 'error').length;
+  const total = completed + errored;
+  if (total === 0) return '';
+  const parts: string[] = [];
+  parts.push(`${total} 步`);
+  if (errored > 0) parts.push(`${errored} 失败`);
+  return parts.join(' · ');
 }
 
 class FeishuCardStreamController implements CardStreamController {
@@ -82,6 +107,9 @@ class FeishuCardStreamController implements CardStreamController {
 
   async create(chatId: string, initialText: string, replyToMessageId?: string): Promise<string> {
     try {
+      const initialContent = initialText
+        ? optimizeMarkdown(initialText)
+        : '💭 Thinking...';
       const cardBody = {
         schema: '2.0',
         config: {
@@ -90,13 +118,15 @@ class FeishuCardStreamController implements CardStreamController {
           summary: { content: '思考中...' },
         },
         body: {
-          elements: [{
-            tag: 'markdown',
-            content: initialText || '💭 Thinking...',
-            text_align: 'left',
-            text_size: 'normal',
-            element_id: STREAMING_ELEMENT_ID,
-          }],
+          elements: [
+            {
+              tag: 'markdown',
+              content: initialContent,
+              text_align: 'left',
+              text_size: 'normal',
+              element_id: STREAMING_ELEMENT_ID,
+            },
+          ],
         },
       };
 
@@ -109,7 +139,6 @@ class FeishuCardStreamController implements CardStreamController {
         return '';
       }
 
-      // 2. Send card as IM message
       const cardContent = JSON.stringify({ type: 'card', data: { card_id: cardId } });
       let msgResp: LarkMessageResponse;
       if (replyToMessageId) {
@@ -148,7 +177,6 @@ class FeishuCardStreamController implements CardStreamController {
     const state = this.cards.get(messageId);
     if (!state) return 'fail';
 
-    // Clear thinking state once text starts flowing
     if (state.thinking && text.trim()) {
       state.thinking = false;
     }
@@ -157,11 +185,10 @@ class FeishuCardStreamController implements CardStreamController {
 
     const elapsed = Date.now() - state.lastUpdateAt;
     if (elapsed < this.config.throttleMs) {
-      // Schedule trailing-edge flush
       if (!state.throttleTimer) {
         state.throttleTimer = setTimeout(() => {
           state.throttleTimer = null;
-          if (state.pendingText) {
+          if (state.pendingText != null) {
             this.flushUpdate(state).catch(() => {});
           }
         }, this.config.throttleMs - elapsed);
@@ -173,15 +200,15 @@ class FeishuCardStreamController implements CardStreamController {
   }
 
   private async flushUpdate(state: CardState): Promise<'ok' | 'fail'> {
-    if (!state.pendingText && state.toolCalls.length === 0) return 'ok';
-
-    // Build content: main text + tool progress
-    let content = state.pendingText || '';
-    const toolMd = buildToolProgressMarkdown(state.toolCalls);
-    if (toolMd) {
-      content = content ? `${content}\n\n${toolMd}` : toolMd;
-    }
+    const text = state.pendingText;
+    if (text == null) return 'ok';
     state.pendingText = null;
+
+    const toolSuffix = buildRunningToolsMarkdown(state.toolCalls);
+    const combined = text
+      ? `${text}${toolSuffix}`
+      : toolSuffix.trimStart();
+    const content = optimizeMarkdown(combined || '💭 Thinking...');
 
     try {
       state.sequence++;
@@ -197,25 +224,12 @@ class FeishuCardStreamController implements CardStreamController {
     }
   }
 
-  /** Update tool call progress — triggers a card update */
   updateToolCalls(messageId: string, tools: ToolCallInfo[]): void {
     const state = this.cards.get(messageId);
     if (!state) return;
     state.toolCalls = tools;
-
-    // Force a flush with current text + updated tool progress
-    const elapsed = Date.now() - state.lastUpdateAt;
-    if (elapsed >= this.config.throttleMs) {
-      this.flushUpdate(state).catch(() => {});
-    } else if (!state.throttleTimer) {
-      state.throttleTimer = setTimeout(() => {
-        state.throttleTimer = null;
-        this.flushUpdate(state).catch(() => {});
-      }, this.config.throttleMs - elapsed);
-    }
   }
 
-  /** Set thinking state — shows 💭 Thinking... in card */
   setThinking(messageId: string): void {
     const state = this.cards.get(messageId);
     if (!state) return;
@@ -230,7 +244,6 @@ class FeishuCardStreamController implements CardStreamController {
     const state = this.cards.get(messageId);
     if (!state) return;
 
-    // Clear any pending throttle
     if (state.throttleTimer) {
       clearTimeout(state.throttleTimer);
       state.throttleTimer = null;
@@ -246,10 +259,7 @@ class FeishuCardStreamController implements CardStreamController {
         },
       });
 
-      // Build final card elements
       const elements: CardElement[] = [];
-
-      // Main content (optimize markdown for Feishu rendering)
       elements.push({
         tag: 'markdown',
         content: optimizeMarkdown(finalText),
@@ -257,20 +267,6 @@ class FeishuCardStreamController implements CardStreamController {
         element_id: STREAMING_ELEMENT_ID,
       });
 
-      // Tool call summary (if any tools were used)
-      if (state.toolCalls.length > 0) {
-        const toolMd = buildToolProgressMarkdown(state.toolCalls);
-        if (toolMd) {
-          elements.push({
-            tag: 'markdown',
-            content: toolMd,
-            text_size: 'notation',
-            element_id: 'tool_summary',
-          });
-        }
-      }
-
-      // Footer
       const footerCfg = this.config.footer;
       const footerParts: string[] = [];
 
@@ -281,6 +277,11 @@ class FeishuCardStreamController implements CardStreamController {
           error: '❌ Error',
         };
         footerParts.push(statusLabels[status] || status);
+      }
+
+      if (state.toolCalls.length > 0) {
+        const toolSummary = buildFinalToolSummary(state.toolCalls);
+        if (toolSummary) footerParts.push(toolSummary);
       }
 
       if (footerCfg?.elapsed) {
@@ -298,7 +299,6 @@ class FeishuCardStreamController implements CardStreamController {
         });
       }
 
-      // Update final card
       const finalCard = {
         schema: '2.0',
         config: { wide_screen_mode: true },
@@ -321,9 +321,6 @@ class FeishuCardStreamController implements CardStreamController {
   }
 }
 
-/**
- * Factory function for creating a card stream controller.
- */
 export function createCardStreamController(
   client: lark.Client,
   config: CardStreamConfig,

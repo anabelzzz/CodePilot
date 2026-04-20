@@ -778,6 +778,32 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
             return { behavior: 'allow' as const, updatedInput: input };
           }
 
+          // Auto-approve safe read-only Bash commands (git status, ls, etc.)
+          if ((toolName === 'Bash' || toolName === 'Shell') && input && typeof input === 'object') {
+            const cmd = String((input as Record<string, unknown>).command || '').trim();
+            const safePatterns = [
+              /^(git\s+)?(status|log|diff|branch|show|remote|tag|stash\s+list)\b/,
+              /^(ls|pwd|cat|head|tail|wc|file|which|whereis|echo|date|whoami)\b/,
+              /^(cd\s+\S+\s*&&\s*)?(git\s+)?(status|log|diff|branch|show)\b/,
+              /^(find|rg|grep|ag)\b/,
+              /^(node|python3?|ruby)\s+(-e\s+|--eval\s+)?['"]?[\w.]+\s*--version/,
+              /^(npm|yarn|pnpm)\s+(list|ls|outdated|info|why)\b/,
+            ];
+            const dangerousPatterns = [
+              /rm\s/, /mv\s/, /cp\s/, /chmod\s/, /chown\s/,
+              />\s/, />>/, /\|/, /;/, /&&(?!.*\b(status|log|diff|branch|show)\b)/,
+              /sudo\s/, /kill\s/, /pkill\s/,
+              /git\s+(push|reset|rebase|merge|checkout|clean|stash\s+(drop|pop|clear))\b/,
+              /npm\s+(install|uninstall|publish|run|exec)\b/,
+              /pip\s+install/, /brew\s+(install|uninstall)/,
+            ];
+            const isDangerous = dangerousPatterns.some(p => p.test(cmd));
+            const isSafe = safePatterns.some(p => p.test(cmd));
+            if (isSafe && !isDangerous) {
+              return { behavior: 'allow' as const, updatedInput: input };
+            }
+          }
+
           const permissionRequestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
           const permEvent: PermissionRequestEvent = {

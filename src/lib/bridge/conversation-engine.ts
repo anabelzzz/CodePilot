@@ -55,7 +55,7 @@ export type OnPartialText = (fullText: string) => void;
  * Callback invoked on tool_use / tool_result SSE events.
  * Used by card streaming to show tool progress indicators.
  */
-export type OnToolEvent = (event: { type: 'tool_use'; id: string; name: string } | { type: 'tool_result'; tool_use_id: string; is_error: boolean }) => void;
+export type OnToolEvent = (event: { type: 'tool_use'; id: string; name: string; input?: Record<string, unknown> } | { type: 'tool_result'; tool_use_id: string; is_error: boolean }) => void;
 
 export interface ConversationResult {
   responseText: string;
@@ -331,7 +331,7 @@ async function consumeStream(
                 input: toolData.input,
               });
               if (onToolEvent) {
-                try { onToolEvent({ type: 'tool_use', id: toolData.id, name: toolData.name }); } catch { /* non-critical */ }
+                try { onToolEvent({ type: 'tool_use', id: toolData.id, name: toolData.name, input: toolData.input }); } catch { /* non-critical */ }
               }
             } catch { /* skip */ }
             break;
